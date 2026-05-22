@@ -5,10 +5,14 @@ import { HttpModule } from '@nestjs/axios';
 
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
-
+import { EventsModule } from './events/events.module';
+import { TicketsModule } from './tickets/tickets.module';
+import { CategoriesModule } from './categories/categories.module';
 
 import { User } from './users/user.entity';
-
+import { Event } from './events/event.entity';
+import { Category } from './categories/category.entity';
+import { Ticket } from './tickets/ticket.entity';
 
 @Module({
   imports: [
@@ -25,7 +29,7 @@ import { User } from './users/user.entity';
         username: config.get<string>('DB_USERNAME'),
         password: config.get<string>('DB_PASSWORD'),
         database: config.get<string>('DB_NAME'),
-        entities: [User, Event],
+        entities: [User, Event, Category, Ticket],
         synchronize: true,
         charset: 'utf8mb4',
       }),
@@ -33,6 +37,9 @@ import { User } from './users/user.entity';
     HttpModule,
     AuthModule,
     UsersModule,
+    EventsModule,
+    TicketsModule,
+    CategoriesModule,
   ],
 })
 export class AppModule {}
