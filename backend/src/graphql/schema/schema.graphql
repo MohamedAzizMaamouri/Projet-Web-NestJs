@@ -1,0 +1,50 @@
+enum UserRole {
+    admin
+    organizer
+    attendee
+}
+
+enum TicketStatus {
+    confirmed
+    cancelled
+}
+
+type Category {
+    id: Int!
+    name: String!
+}
+
+type User {
+    id: Int!
+    username: String!
+    email: String!
+    role: UserRole!
+    createdAt: String!
+}
+
+type Event {
+    id: Int!
+    title: String!
+    description: String!
+    date: String!
+    location: String!
+    capacity: Int!
+    ticketsLeft: Int!
+    category: Category!
+    organizer: User!
+    createdAt: String!
+}
+
+type Ticket {
+    id: Int!
+    event: Event!
+    seat: String
+    purchasedAt: String!
+    status: TicketStatus!
+}
+
+type Query {
+    events(category: String, date: String): [Event!]!
+    event(id: Int!): Event!
+    myTickets: [Ticket!]!
+}
