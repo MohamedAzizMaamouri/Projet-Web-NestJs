@@ -11,13 +11,19 @@ import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
 import { User, UserRole } from '../users/user.entity';
 import { CategoriesService } from '../categories/categories.service';
+import { Ticket, TicketStatus } from '../tickets/ticket.entity';
+import { InjectRepository as InjectTicketRepository } from '@nestjs/typeorm';
 
 @Injectable()
 export class EventsService extends BaseService<Event> {
   constructor(
-    @InjectRepository(Event)
-    private readonly eventRepository: Repository<Event>,
-    private readonly categoriesService: CategoriesService,
+      @InjectRepository(Event)
+      private readonly eventRepository: Repository<Event>,
+
+      @InjectTicketRepository(Ticket)
+      private readonly ticketRepository: Repository<Ticket>,
+
+      private readonly categoriesService: CategoriesService,
   ) {
     super(eventRepository);
   }
@@ -41,6 +47,7 @@ export class EventsService extends BaseService<Event> {
       date: new Date(dto.date),
       location: dto.location,
       capacity: dto.capacity,
+      price: dto.price ?? 0,
       category,
       organizer,
     });
@@ -49,18 +56,18 @@ export class EventsService extends BaseService<Event> {
   }
 
   async updateEvent(
-    id: number,
-    dto: UpdateEventDto,
-    requestingUser: User,
+      id: number,
+      dto: UpdateEventDto,
+      requestingUser: User,
   ): Promise<Event> {
     const event = await this.getEventById(id);
 
     if (
-      requestingUser.role !== UserRole.ADMIN &&
-      event.organizer.id !== requestingUser.id
+        requestingUser.role !== UserRole.ADMIN &&
+        event.organizer.id !== requestingUser.id
     ) {
       throw new ForbiddenException(
-        'Only the organizer or an admin can update this event',
+          'Only the organizer or an admin can update this event',
       );
     }
 
@@ -85,14 +92,51 @@ export class EventsService extends BaseService<Event> {
     const event = await this.getEventById(id);
 
     if (
-      requestingUser.role !== UserRole.ADMIN &&
-      event.organizer.id !== requestingUser.id
+        requestingUser.role !== UserRole.ADMIN &&
+        event.organizer.id !== requestingUser.id
     ) {
       throw new ForbiddenException(
-        'Only the organizer or an admin can delete this event',
+          'Only the organizer or an admin can delete this event',
       );
     }
 
     await this.eventRepository.remove(event);
+  }
+
+  // ─── Revenue ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Returns total revenue for an event: SUM of pricePaid across all CONFIRMED tickets.
+   * Only the event's organizer or an admin can access this.
+   */
+  async getEventRevenue(
+      eventId: number,
+      requestingUser: User,
+  ): Promise<{ eventId: number; eventTitle: string; revenue: number; ticketsSold: number }> {
+    const event = await this.getEventById(eventId);
+
+    if (
+        requestingUser.role !== UserRole.ADMIN &&
+        event.organizer.id !== requestingUser.id
+    ) {
+      throw new ForbiddenException(
+          'Only the event organizer or an admin can view revenue.',
+      );
+    }
+
+    const result = await this.ticketRepository
+        .createQueryBuilder('ticket')
+        .select('SUM(ticket.pricePaid)', 'revenue')
+        .addSelect('COUNT(ticket.id)', 'ticketsSold')
+        .where('ticket.eventId = :eventId', { eventId })
+        .andWhere('ticket.status = :status', { status: TicketStatus.CONFIRMED })
+        .getRawOne();
+
+    return {
+      eventId: event.id,
+      eventTitle: event.title,
+      revenue: Number(result.revenue) || 0,
+      ticketsSold: Number(result.ticketsSold) || 0,
+    };
   }
 }

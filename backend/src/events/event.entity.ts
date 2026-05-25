@@ -30,6 +30,9 @@ export class Event {
   @Column()
   capacity: number;
 
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  price: number;
+
   @ManyToOne(() => Category, { eager: true, nullable: false })
   @JoinColumn({ name: 'categoryId' })
   category: Category;
