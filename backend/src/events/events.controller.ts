@@ -21,6 +21,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { Request } from 'express';
 import { User } from '../users/user.entity';
 import {ApiBearerAuth} from "@nestjs/swagger";
+import {TransitionEventStatusDto} from "./dto/transition-event-status.dto";
 
 @Controller('events')
 export class EventsController {
@@ -65,6 +66,14 @@ export class EventsController {
     return this.eventsService.deleteEvent(id, req.user as User);
   }
 
+  @Patch('cancel/:id')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  cancel(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.eventsService.cancelEvent(id, req.user as User);
+  }
+
   /**
    * GET /events/:id/revenue
    * Returns total revenue and tickets sold for an event.
@@ -76,5 +85,17 @@ export class EventsController {
   @Roles('organizer', 'admin')
   getRevenue(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.eventsService.getEventRevenue(id, req.user as User);
+  }
+
+  @Patch('status/:id')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  transition(
+      @Param('id', ParseIntPipe) id: number,
+      @Body() dto: TransitionEventStatusDto,
+      @Req() req: Request,
+  ) {
+    return this.eventsService.transitionStatus(id, dto.status, req.user as User);
   }
 }

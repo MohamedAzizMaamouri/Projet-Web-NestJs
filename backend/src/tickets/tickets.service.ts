@@ -13,7 +13,7 @@ import { BaseService } from '../common/base.service';
 import { Ticket, TicketStatus } from './ticket.entity';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { User, UserRole } from '../users/user.entity';
-import { Event } from '../events/event.entity';
+import {Event, EventStatus} from '../events/event.entity';
 import { EventsService } from '../events/events.service';
 import { transition } from './ticket-status.machine';
 import { firstValueFrom } from 'rxjs';
@@ -44,6 +44,12 @@ export class TicketsService extends BaseService<Ticket> {
 
       if (!event) {
         throw new BadRequestException(`Event #${dto.eventId} not found`);
+      }
+
+      if (event.status !== EventStatus.PUBLISHED) {
+        throw new BadRequestException(
+            `Tickets can only be purchased for published events (current status: ${event.status})`,
+        );
       }
 
       if (event.date <= new Date()) {
@@ -159,27 +165,22 @@ export class TicketsService extends BaseService<Ticket> {
     return this.ticketRepository.save(ticket);
   }
 
-  // ─── Refund (internal — triggered when an organizer cancels an event) ─────────
+  async refundTicket(ticketId: number, requestingUser: User): Promise<Ticket> {
+    const ticket = await this.findTicketById(ticketId);
 
-  /**
-   * Bulk-refunds all CONFIRMED tickets for a given event.
-   * This is called internally when an event is cancelled by its organizer.
-   * Each ticket goes through the state machine: CONFIRMED → REFUNDED.
-   */
-  async refundAllTicketsForEvent(eventId: number): Promise<void> {
-    const tickets = await this.ticketRepository.find({
-      where: {
-        event: { id: eventId },
-        status: TicketStatus.CONFIRMED,
-      },
-    });
+    const isTicketHolder =
+        ticket.owner?.id === requestingUser.id;
+    const isAdmin = requestingUser.role === UserRole.ADMIN;
 
-    for (const ticket of tickets) {
-      // State machine validates: CONFIRMED → REFUNDED
-      ticket.status = transition(ticket.status, TicketStatus.REFUNDED);
+    if (!isTicketHolder && !isAdmin) {
+      throw new ForbiddenException(
+          'Only the ticket holder or an admin can refund tickets.',
+      );
     }
+    
+    ticket.status = transition(ticket.status, TicketStatus.REFUNDED);
 
-    await this.ticketRepository.save(tickets);
+    return this.ticketRepository.save(ticket);
   }
 
   // ─── Scan (by organizer or admin at the venue entrance) ──────────────────────

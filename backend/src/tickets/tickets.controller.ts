@@ -72,4 +72,13 @@ export class TicketsController {
   ) {
     return this.ticketsService.scanTicket(id, req.user as User);
   }
+
+  @Patch('refund/:id')
+  @ApiBearerAuth()
+  refundTicket(
+      @Param('id', ParseIntPipe) id: number,
+      @Req() req: Request,
+  ) {
+    return this.ticketsService.refundTicket(id, req.user as User);
+  }
 }

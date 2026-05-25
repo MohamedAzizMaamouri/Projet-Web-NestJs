@@ -1,18 +1,15 @@
-import {
-  Injectable,
-  ForbiddenException,
-  NotFoundException,
-} from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { BaseService } from '../common/base.service';
-import { Event } from './event.entity';
-import { CreateEventDto } from './dto/create-event.dto';
-import { UpdateEventDto } from './dto/update-event.dto';
-import { User, UserRole } from '../users/user.entity';
-import { CategoriesService } from '../categories/categories.service';
-import { Ticket, TicketStatus } from '../tickets/ticket.entity';
-import { InjectRepository as InjectTicketRepository } from '@nestjs/typeorm';
+import {BadRequestException, ForbiddenException, Injectable,} from '@nestjs/common';
+import {InjectRepository, InjectRepository as InjectTicketRepository} from '@nestjs/typeorm';
+import {Repository} from 'typeorm';
+import {BaseService} from '../common/base.service';
+import {Event, EventStatus} from './event.entity';
+import {CreateEventDto} from './dto/create-event.dto';
+import {UpdateEventDto} from './dto/update-event.dto';
+import {User, UserRole} from '../users/user.entity';
+import {CategoriesService} from '../categories/categories.service';
+import {Ticket, TicketStatus} from '../tickets/ticket.entity';
+import {transitionEvent} from "./event-status.machine";
+import {transition} from '../tickets/ticket-status.machine';
 
 @Injectable()
 export class EventsService extends BaseService<Event> {
@@ -50,6 +47,7 @@ export class EventsService extends BaseService<Event> {
       price: dto.price ?? 0,
       category,
       organizer,
+      status: EventStatus.PUBLISHED
     });
 
     return this.eventRepository.save(event);
@@ -68,6 +66,15 @@ export class EventsService extends BaseService<Event> {
     ) {
       throw new ForbiddenException(
           'Only the organizer or an admin can update this event',
+      );
+    }
+
+    if (
+        event.status === EventStatus.ENDED ||
+        event.status === EventStatus.CANCELLED
+    ) {
+      throw new BadRequestException(
+          `Cannot update an event that is already ${event.status}`,
       );
     }
 
@@ -100,7 +107,38 @@ export class EventsService extends BaseService<Event> {
       );
     }
 
+    if (event.status !== EventStatus.PUBLISHED) {
+      throw new BadRequestException(
+          `Cannot delete an event with status "${event.status}". Cancel it instead.`,
+      );
+    }
+    
+    await this.refundAllTicketsForEvent(id)
+
     await this.eventRepository.remove(event);
+  }
+
+  async cancelEvent(id: number, requestingUser: User): Promise<void> {
+    const event = await this.getEventById(id);
+
+    if (
+        requestingUser.role !== UserRole.ADMIN &&
+        event.organizer.id !== requestingUser.id
+    ) {
+      throw new ForbiddenException(
+          'Only the organizer or an admin can cancel this event',
+      );
+    }
+
+    if (event.status === EventStatus.ENDED) {
+      throw new BadRequestException(
+          `Cannot cancel an event with status "${event.status}".`,
+      );
+    }
+
+    await this.refundAllTicketsForEvent(id)
+
+    await this.transitionStatus(id, EventStatus.CANCELLED, requestingUser);
   }
 
   // ─── Revenue ─────────────────────────────────────────────────────────────────
@@ -138,5 +176,42 @@ export class EventsService extends BaseService<Event> {
       revenue: Number(result.revenue) || 0,
       ticketsSold: Number(result.ticketsSold) || 0,
     };
+  }
+
+  async refundAllTicketsForEvent(eventId: number): Promise<void> {
+    const tickets = await this.ticketRepository.find({
+      where: {
+        event: { id: eventId },
+        status: TicketStatus.CONFIRMED,
+      },
+    });
+
+    for (const ticket of tickets) {
+      // State machine validates: CONFIRMED → REFUNDED
+      ticket.status = transition(ticket.status, TicketStatus.REFUNDED);
+    }
+
+    await this.ticketRepository.save(tickets);
+  }
+
+  async transitionStatus(
+      id: number,
+      newStatus: EventStatus,
+      requestingUser: User,
+  ): Promise<Event> {
+    const event = await this.getEventById(id);
+    this.assertOwnerOrAdmin(event, requestingUser);
+    
+    event.status = transitionEvent(event.status, newStatus);
+    return this.eventRepository.save(event);
+  }
+  
+
+  private assertOwnerOrAdmin(event: Event, user: User): void {
+    if (user.role !== UserRole.ADMIN && event.organizer.id !== user.id) {
+      throw new ForbiddenException(
+          'Only the organizer or an admin can perform this action',
+      );
+    }
   }
 }

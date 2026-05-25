@@ -10,6 +10,13 @@ import {
 import { User } from '../users/user.entity';
 import { Category } from '../categories/category.entity';
 
+export enum EventStatus {
+  PUBLISHED = 'published',
+  ONGOING   = 'ongoing',
+  ENDED     = 'ended',
+  CANCELLED = 'cancelled',
+}
+
 @Entity('events')
 export class Event {
   @PrimaryGeneratedColumn()
@@ -29,6 +36,13 @@ export class Event {
 
   @Column()
   capacity: number;
+
+  @Column({
+    type: 'enum',
+    enum: EventStatus,
+    default: EventStatus.PUBLISHED,
+  })
+  status: EventStatus;
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   price: number;
