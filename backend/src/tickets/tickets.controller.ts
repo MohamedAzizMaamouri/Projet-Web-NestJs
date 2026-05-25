@@ -16,6 +16,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Request } from 'express';
 import { User } from '../users/user.entity';
+import {ApiBearerAuth} from "@nestjs/swagger";
 
 @Controller('tickets')
 @UseGuards(JwtAuthGuard)
@@ -26,7 +27,8 @@ export class TicketsController {
    * POST /tickets
    * Any authenticated user can purchase a ticket.
    */
-  @Post()
+  @Post('purchase')
+  @ApiBearerAuth()
   purchase(@Body() dto: CreateTicketDto, @Req() req: Request) {
     return this.ticketsService.purchaseTicket(dto, req.user as User);
   }
@@ -36,6 +38,7 @@ export class TicketsController {
    * Returns all tickets belonging to the authenticated user.
    */
   @Get('my')
+  @ApiBearerAuth()
   getMyTickets(@Req() req: Request) {
     return this.ticketsService.getMyTickets(req.user as User);
   }
@@ -45,7 +48,8 @@ export class TicketsController {
    * The ticket owner or an admin can cancel a CONFIRMED ticket.
    * The state machine rejects the request if the ticket is in any other status.
    */
-  @Patch(':id/cancel')
+  @Patch('cancel/:id')
+  @ApiBearerAuth()
   cancelTicket(
       @Param('id', ParseIntPipe) id: number,
       @Req() req: Request,
@@ -58,7 +62,8 @@ export class TicketsController {
    * Only organizers (of that specific event) or admins can scan a ticket.
    * A SCANNED ticket cannot be scanned again — the state machine blocks it.
    */
-  @Patch(':id/scan')
+  @Patch('scan/:id')
+  @ApiBearerAuth()
   @UseGuards(RolesGuard)
   @Roles('organizer', 'admin')
   scanTicket(

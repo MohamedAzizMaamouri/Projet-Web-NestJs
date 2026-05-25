@@ -10,17 +10,20 @@ import { CreateCategoryDto } from './dto/create-category.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import {ApiBearerAuth} from "@nestjs/swagger";
 
 @Controller('categories')
 export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
-  @Get()
+  @Get('all')
+  @ApiBearerAuth()
   findAll() {
     return this.categoriesService.getAllCategories();
   }
 
-  @Post()
+  @Post('create')
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
   create(@Body() dto: CreateCategoryDto) {

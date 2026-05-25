@@ -9,10 +9,7 @@ import { EventsModule } from '../events/events.module';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Ticket]), EventsModule, HttpModule],
-  providers: [
-    TicketsService,
-    { provide: DataSource, useExisting: DataSource },
-  ],
+  providers: [TicketsService],
   controllers: [TicketsController],
 })
 export class TicketsModule {}

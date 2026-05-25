@@ -106,6 +106,34 @@ export class TicketsService extends BaseService<Ticket> {
     return saved;
   }
 
+  private async fireWebhook(
+      ticket: Ticket,
+      event: any,
+      owner: User,
+  ): Promise<void> {
+    try {
+      const webhookUrl =
+          this.configService.get<string>('WEBHOOK_URL') ??
+          'https://webhook.site/your-uuid';
+
+      const payload = {
+        ticketId: ticket.id,
+        eventTitle: event.title,
+        ownerEmail: owner.email,
+        seat: ticket.seat,
+        purchasedAt: ticket.purchasedAt,
+      };
+
+      await firstValueFrom(
+          this.httpService.post(webhookUrl, payload, {
+            timeout: 5000,
+          }),
+      );
+    } catch (_err) {
+      // Webhook failure must not affect the ticket purchase
+    }
+  }
+
   // ─── Cancel (by attendee or admin) ───────────────────────────────────────────
 
   /**
