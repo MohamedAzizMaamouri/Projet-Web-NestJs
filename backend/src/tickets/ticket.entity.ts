@@ -36,6 +36,13 @@ export class Ticket {
   @Column({ type: 'datetime' })
   purchasedAt: Date;
 
+  /**
+   * Price paid at the moment of purchase.
+   * Stored on the ticket so the history is preserved even if event.price changes later.
+   */
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  pricePaid: number;
+
   @Column({
     type: 'enum',
     enum: TicketStatus,

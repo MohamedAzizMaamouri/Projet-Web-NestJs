@@ -2,6 +2,8 @@ import {
   IsDateString,
   IsInt,
   IsNotEmpty,
+  IsNumber,
+  IsOptional,
   IsPositive,
   IsString,
   Min,
@@ -27,6 +29,15 @@ export class CreateEventDto {
   @IsPositive()
   @Min(1)
   capacity: number;
+
+  /**
+   * Ticket price in the platform's currency unit (e.g. TND).
+   * Defaults to 0 for free events.
+   */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  price?: number;
 
   @IsInt()
   @IsPositive()

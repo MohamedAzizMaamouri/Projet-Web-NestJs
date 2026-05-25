@@ -45,9 +45,9 @@ export class EventsController {
   @Patch(':id')
   @UseGuards(JwtAuthGuard)
   update(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateEventDto,
-    @Req() req: Request,
+      @Param('id', ParseIntPipe) id: number,
+      @Body() dto: UpdateEventDto,
+      @Req() req: Request,
   ) {
     return this.eventsService.updateEvent(id, dto, req.user as User);
   }
@@ -57,5 +57,17 @@ export class EventsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     return this.eventsService.deleteEvent(id, req.user as User);
+  }
+
+  /**
+   * GET /events/:id/revenue
+   * Returns total revenue and tickets sold for an event.
+   * Restricted to the event's organizer or an admin.
+   */
+  @Get(':id/revenue')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('organizer', 'admin')
+  getRevenue(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    return this.eventsService.getEventRevenue(id, req.user as User);
   }
 }

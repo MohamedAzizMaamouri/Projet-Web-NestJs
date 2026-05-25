@@ -34,7 +34,7 @@ export class TicketsService extends BaseService<Ticket> {
     const event = await this.eventsService.getEventById(dto.eventId);
 
     const soldTickets = await this.ticketRepository.count({
-      where: {event: {id: event.id}},
+      where: { event: { id: event.id } },
     });
 
     if (soldTickets >= event.capacity) {
@@ -53,10 +53,11 @@ export class TicketsService extends BaseService<Ticket> {
       seat: dto.seat ?? null,
       purchasedAt: new Date(),
       status: confirmedStatus,
+      // Stamp the price at purchase time — preserved even if event.price changes later
+      pricePaid: event.price ?? 0,
     });
 
     const saved = await this.ticketRepository.save(ticket);
-
 
     return saved;
   }
@@ -96,7 +97,7 @@ export class TicketsService extends BaseService<Ticket> {
   async refundAllTicketsForEvent(eventId: number): Promise<void> {
     const tickets = await this.ticketRepository.find({
       where: {
-        event: {id: eventId},
+        event: { id: eventId },
         status: TicketStatus.CONFIRMED,
       },
     });
@@ -140,17 +141,19 @@ export class TicketsService extends BaseService<Ticket> {
 
   getMyTickets(owner: User): Promise<Ticket[]> {
     return this.ticketRepository.find({
-      where: {owner: {id: owner.id}},
+      where: { owner: { id: owner.id } },
     });
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
   private async findTicketById(id: number): Promise<Ticket> {
-    const ticket = await this.ticketRepository.findOne({where: {id}});
+    const ticket = await this.ticketRepository.findOne({ where: { id } });
     if (!ticket) {
       throw new NotFoundException(`Ticket #${id} not found.`);
     }
     return ticket;
   }
+
+
 }
