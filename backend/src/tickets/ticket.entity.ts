@@ -5,6 +5,7 @@ import {
   ManyToOne,
   JoinColumn,
   CreateDateColumn,
+  Unique,
 } from 'typeorm';
 import { User } from '../users/user.entity';
 import { Event } from '../events/event.entity';
@@ -18,6 +19,7 @@ export enum TicketStatus {
 }
 
 @Entity('tickets')
+@Unique('UQ_ticket_event_seat', ['event', 'seat'])
 export class Ticket {
   @PrimaryGeneratedColumn()
   id: number;

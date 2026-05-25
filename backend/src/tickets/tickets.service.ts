@@ -3,15 +3,17 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { BaseService } from '../common/base.service';
 import { Ticket, TicketStatus } from './ticket.entity';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { User, UserRole } from '../users/user.entity';
+import { Event } from '../events/event.entity';
 import { EventsService } from '../events/events.service';
 import { transition } from './ticket-status.machine';
 import { firstValueFrom } from 'rxjs';
@@ -19,11 +21,12 @@ import { firstValueFrom } from 'rxjs';
 @Injectable()
 export class TicketsService extends BaseService<Ticket> {
   constructor(
-      @InjectRepository(Ticket)
-      private readonly ticketRepository: Repository<Ticket>,
-      private readonly eventsService: EventsService,
-      private readonly httpService: HttpService,
-      private readonly configService: ConfigService,
+    @InjectRepository(Ticket)
+    private readonly ticketRepository: Repository<Ticket>,
+    private readonly eventsService: EventsService,
+    private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
+    private readonly dataSource: DataSource,
   ) {
     super(ticketRepository);
   }
@@ -31,33 +34,74 @@ export class TicketsService extends BaseService<Ticket> {
   // ─── Purchase ────────────────────────────────────────────────────────────────
 
   async purchaseTicket(dto: CreateTicketDto, buyer: User): Promise<Ticket> {
-    const event = await this.eventsService.getEventById(dto.eventId);
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const event = await manager
+        .getRepository(Event)
+        .createQueryBuilder('event')
+        .setLock('pessimistic_write')
+        .where('event.id = :id', { id: dto.eventId })
+        .getOne();
 
-    const soldTickets = await this.ticketRepository.count({
-      where: { event: { id: event.id } },
-    });
+      if (!event) {
+        throw new BadRequestException(`Event #${dto.eventId} not found`);
+      }
 
-    if (soldTickets >= event.capacity) {
-      throw new BadRequestException(
+      if (event.date <= new Date()) {
+        throw new BadRequestException(
+          'Tickets can no longer be purchased: this event has already started or ended',
+        );
+      }
+
+      const soldCount = await manager
+        .getRepository(Ticket)
+        .count({
+          where: 
+              { event: { id: event.id }, 
+                status: TicketStatus.CONFIRMED,
+              }
+        });
+
+      if (soldCount >= event.capacity) {
+        throw new BadRequestException(
           `This event is fully booked (capacity: ${event.capacity})`,
-      );
-    }
+        );
+      }
+      
+      const numericPart = parseInt(dto.seat.replace(/^[A-Za-z\-]*/g, ''), 10);
+      if (!isNaN(numericPart) && numericPart > event.capacity) {
+        throw new BadRequestException(
+          `Seat "${dto.seat}" exceeds event capacity (${event.capacity})`,
+        );
+      }
 
-    // Start at PENDING, immediately confirm (payment is synchronous for now)
-    const initialStatus = TicketStatus.PENDING;
-    const confirmedStatus = transition(initialStatus, TicketStatus.CONFIRMED);
+      const seatTaken = await manager.getRepository(Ticket).findOne({
+        where: { event: { id: event.id }, seat: dto.seat },
+      });
+      if (seatTaken) {
+        throw new ConflictException(
+          `Seat "${dto.seat}" is already taken for this event`,
+        );
+      }
 
-    const ticket = this.ticketRepository.create({
-      event,
-      owner: buyer,
-      seat: dto.seat ?? null,
-      purchasedAt: new Date(),
-      status: confirmedStatus,
-      // Stamp the price at purchase time — preserved even if event.price changes later
-      pricePaid: event.price ?? 0,
+      // Start at PENDING, immediately confirm (payment is synchronous for now)
+      const initialStatus = TicketStatus.PENDING;
+      const confirmedStatus = transition(initialStatus, TicketStatus.CONFIRMED);
+
+      const ticket = this.ticketRepository.create({
+        event,
+        owner: buyer,
+        seat: dto.seat ?? null,
+        purchasedAt: new Date(),
+        status: confirmedStatus,
+        // Stamp the price at purchase time — preserved even if event.price changes later
+        pricePaid: event.price ?? 0,
+      });
+
+      return manager.getRepository(Ticket).save(ticket);
     });
 
-    const saved = await this.ticketRepository.save(ticket);
+    const fullEvent = await this.eventsService.getEventById(dto.eventId);
+    await this.fireWebhook(saved, fullEvent, buyer);
 
     return saved;
   }
