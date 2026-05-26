@@ -8,11 +8,19 @@ import { UsersModule } from './users/users.module';
 import { EventsModule } from './events/events.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { CategoriesModule } from './categories/categories.module';
+import { RealtimeModule } from './realtime/realtime.module';
+import { PromoCodesModule } from './promo-codes/promo-codes.module';
+import { WaitlistModule } from './waitlist/waitlist.module';
+import { FollowsModule } from './follows/follows.module';
 
 import { User } from './users/user.entity';
 import { Event } from './events/event.entity';
 import { Category } from './categories/category.entity';
 import { Ticket } from './tickets/ticket.entity';
+import { TicketTier } from './tickets/ticket-tier.entity';
+import { PromoCode } from './promo-codes/promo-code.entity';
+import { WaitlistEntry } from './waitlist/waitlist-entry.entity';
+import { UserFollowsOrganizer } from './follows/user-follows-organizer.entity';
 
 @Module({
   imports: [
@@ -29,7 +37,16 @@ import { Ticket } from './tickets/ticket.entity';
         username: config.get<string>('DB_USERNAME'),
         password: config.get<string>('DB_PASSWORD'),
         database: config.get<string>('DB_NAME'),
-        entities: [User, Event, Category, Ticket],
+        entities: [
+          User,
+          Event,
+          Category,
+          Ticket,
+          TicketTier,
+          PromoCode,
+          WaitlistEntry,
+          UserFollowsOrganizer,
+        ],
         synchronize: true,
         charset: 'utf8mb4',
       }),
@@ -40,6 +57,10 @@ import { Ticket } from './tickets/ticket.entity';
     EventsModule,
     TicketsModule,
     CategoriesModule,
+    RealtimeModule,
+    PromoCodesModule,
+    WaitlistModule,
+    FollowsModule,
   ],
 })
 export class AppModule {}

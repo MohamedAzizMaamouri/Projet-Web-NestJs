@@ -4,30 +4,40 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, QueryFailedError, Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { BaseService } from '../common/base.service';
 import { Ticket, TicketStatus } from './ticket.entity';
+import { TicketTier } from './ticket-tier.entity';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { User, UserRole } from '../users/user.entity';
-import {Event, EventStatus} from '../events/event.entity';
+import { Event, EventStatus } from '../events/event.entity';
 import { EventsService } from '../events/events.service';
 import { transition } from './ticket-status.machine';
 import { firstValueFrom } from 'rxjs';
 import { v4 as uuidv4 } from 'uuid';
+import { PromoCodesService } from '../promo-codes/promo-codes.service';
+import { RealtimeService } from '../realtime/realtime.service';
+import { WaitlistService } from '../waitlist/waitlist.service';
 
 @Injectable()
 export class TicketsService extends BaseService<Ticket> {
+  private readonly logger = new Logger(TicketsService.name);
+
   constructor(
-      @InjectRepository(Ticket)
-      private readonly ticketRepository: Repository<Ticket>,
-      private readonly eventsService: EventsService,
-      private readonly httpService: HttpService,
-      private readonly configService: ConfigService,
-      private readonly dataSource: DataSource,
+    @InjectRepository(Ticket)
+    private readonly ticketRepository: Repository<Ticket>,
+    private readonly eventsService: EventsService,
+    private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
+    private readonly dataSource: DataSource,
+    private readonly promoCodesService: PromoCodesService,
+    private readonly realtimeService: RealtimeService,
+    private readonly waitlistService: WaitlistService,
   ) {
     super(ticketRepository);
   }
@@ -37,11 +47,11 @@ export class TicketsService extends BaseService<Ticket> {
   async purchaseTicket(dto: CreateTicketDto, buyer: User): Promise<Ticket> {
     const saved = await this.dataSource.transaction(async (manager) => {
       const event = await manager
-          .getRepository(Event)
-          .createQueryBuilder('event')
-          .setLock('pessimistic_write')
-          .where('event.id = :id', { id: dto.eventId })
-          .getOne();
+        .getRepository(Event)
+        .createQueryBuilder('event')
+        .setLock('pessimistic_write')
+        .where('event.id = :id', { id: dto.eventId })
+        .getOne();
 
       if (!event) {
         throw new BadRequestException(`Event #${dto.eventId} not found`);
@@ -49,80 +59,149 @@ export class TicketsService extends BaseService<Ticket> {
 
       if (event.status !== EventStatus.PUBLISHED) {
         throw new BadRequestException(
-            `Tickets can only be purchased for published events (current status: ${event.status})`,
+          `Tickets can only be purchased for published events (current status: ${event.status})`,
         );
       }
 
       if (event.date <= new Date()) {
         throw new BadRequestException(
-            'Tickets can no longer be purchased: this event has already started or ended',
+          'Tickets can no longer be purchased: this event has already started or ended',
         );
       }
 
-      const soldCount = await manager
-          .getRepository(Ticket)
-          .count({
-            where:
-                { event: { id: event.id },
-                  status: TicketStatus.CONFIRMED,
-                }
-          });
+      const salesClosedAt =
+        event.salesClosedAt ?? new Date(event.date.getTime() - 60 * 60 * 1000);
 
-      if (soldCount >= event.capacity) {
-        throw new BadRequestException(
-            `This event is fully booked (capacity: ${event.capacity})`,
-        );
+      if (salesClosedAt <= new Date()) {
+        throw new BadRequestException('Ticket sales are closed for this event');
       }
 
-      const numericPart = parseInt(dto.seat.replace(/^[A-Za-z\-]*/g, ''), 10);
-      if (!isNaN(numericPart) && numericPart > event.capacity) {
-        throw new BadRequestException(
-            `Seat "${dto.seat}" exceeds event capacity (${event.capacity})`,
-        );
-      }
-
-      const seatTaken = await manager.getRepository(Ticket).findOne({
-        where: { event: { id: event.id }, seat: dto.seat },
+      const existingTicket = await manager.getRepository(Ticket).findOne({
+        where: {
+          event: { id: event.id },
+          owner: { id: buyer.id },
+        },
       });
-      if (seatTaken) {
+
+      if (existingTicket) {
         throw new ConflictException(
-            `Seat "${dto.seat}" is already taken for this event`,
+          'Vous possédez déjà un ticket pour cet événement',
         );
+      }
+
+      await this.waitlistService.assertUserCanPurchaseReservedSeat(
+        event.id,
+        buyer.id,
+      );
+
+      const tier = await manager.getRepository(TicketTier).findOne({
+        where: { id: dto.tierId, event: { id: event.id } },
+      });
+
+      if (!tier) {
+        throw new BadRequestException(
+            `Tier #${dto.tierId} does not exist for event #${dto.eventId}`,
+        );
+      }
+
+      const soldInTier = await manager.getRepository(Ticket).count({
+        where: {
+          event: { id: event.id },
+          tier: { id: tier.id },
+          status: TicketStatus.CONFIRMED,
+        },
+      });
+
+      if (soldInTier >= tier.capacity) {
+        throw new BadRequestException(
+            `Tier "${tier.name}" is fully booked (capacity: ${tier.capacity})`,
+        );
+      }
+
+      if (dto.seat) {
+        const numericPart = parseInt(dto.seat.replace(/^[A-Za-z\-]*/g, ''), 10);
+        if (!isNaN(numericPart) && numericPart > event.capacity) {
+          throw new BadRequestException(
+            `Seat "${dto.seat}" exceeds event capacity (${event.capacity})`,
+          );
+        }
+
+        const seatTaken = await manager.getRepository(Ticket).findOne({
+          where: { event: { id: event.id }, seat: dto.seat },
+        });
+        if (seatTaken) {
+          throw new ConflictException(
+            `Seat "${dto.seat}" is already taken for this event`,
+          );
+        }
       }
 
       // Start at PENDING, immediately confirm (payment is synchronous for now)
       const initialStatus = TicketStatus.PENDING;
       const confirmedStatus = transition(initialStatus, TicketStatus.CONFIRMED);
+      const originalPrice = Number(tier.price ?? 0);
+      const promoResult = dto.promoCode
+        ? await this.promoCodesService.applyPromoCode(
+            manager,
+            event.id,
+            dto.promoCode,
+            originalPrice,
+          )
+        : null;
 
-      const ticket = this.ticketRepository.create({
+      const ticket = manager.getRepository(Ticket).create({
         event,
         owner: buyer,
+        tier,
         seat: dto.seat ?? null,
         purchasedAt: new Date(),
         status: confirmedStatus,
-        // Stamp the price at purchase time — preserved even if event.price changes later
-        pricePaid: event.price ?? 0,
+        pricePaid: promoResult?.pricePaid ?? originalPrice,
         qrToken: uuidv4(),
       });
 
-      return manager.getRepository(Ticket).save(ticket);
+      try {
+        return await manager.getRepository(Ticket).save(ticket);
+      } catch (error) {
+        if (
+          error instanceof QueryFailedError &&
+          String((error as any).driverError?.code) === 'ER_DUP_ENTRY' &&
+          String((error as any).driverError?.message).includes(
+            'UQ_ticket_event_owner',
+          )
+        ) {
+          throw new ConflictException(
+            'Vous possédez déjà un ticket pour cet événement',
+          );
+        }
+
+        throw error;
+      }
     });
 
     const fullEvent = await this.eventsService.getEventById(dto.eventId);
+    await this.waitlistService.markClaimed(dto.eventId, buyer.id);
+    await this.realtimeService.publishAvailability(dto.eventId);
+    this.realtimeService.publishMessage({
+      eventId: dto.eventId,
+      type: 'purchase-confirmation',
+      text: `Ticket confirmed for ${fullEvent.title}`,
+      sender: buyer.username,
+    });
     await this.fireWebhook(saved, fullEvent, buyer);
 
     return saved;
   }
 
   private async fireWebhook(
-      ticket: Ticket,
-      event: any,
-      owner: User,
+    ticket: Ticket,
+    event: any,
+    owner: User,
   ): Promise<void> {
     try {
       const webhookUrl =
-          this.configService.get<string>('WEBHOOK_URL') ??
-          'https://webhook.site/your-uuid';
+        this.configService.get<string>('WEBHOOK_URL') ??
+        'https://webhook.site/your-uuid';
 
       const payload = {
         ticketId: ticket.id,
@@ -133,9 +212,9 @@ export class TicketsService extends BaseService<Ticket> {
       };
 
       await firstValueFrom(
-          this.httpService.post(webhookUrl, payload, {
-            timeout: 5000,
-          }),
+        this.httpService.post(webhookUrl, payload, {
+          timeout: 5000,
+        }),
       );
     } catch (_err) {
       // Webhook failure must not affect the ticket purchase
@@ -157,32 +236,45 @@ export class TicketsService extends BaseService<Ticket> {
 
     if (!isOwner && !isAdmin) {
       throw new ForbiddenException(
-          'You are not allowed to cancel this ticket.',
+        'You are not allowed to cancel this ticket.',
       );
     }
 
     // State machine validates: CONFIRMED → CANCELLED (throws if invalid)
     ticket.status = transition(ticket.status, TicketStatus.CANCELLED);
 
-    return this.ticketRepository.save(ticket);
+    const saved = await this.ticketRepository.save(ticket);
+    await this.realtimeService.publishAvailability(ticket.event.id);
+    await this.waitlistService.notifyNextWaitingUser(ticket.event.id);
+
+    const eventTitle = saved.event?.title ?? `Event #${saved.event?.id}`;
+    this.realtimeService.publishPersonalTicketUpdate(saved, eventTitle);
+
+    return saved;
   }
 
   async refundTicket(ticketId: number, requestingUser: User): Promise<Ticket> {
     const ticket = await this.findTicketById(ticketId);
 
-    const isTicketHolder =
-        ticket.owner?.id === requestingUser.id;
+    const isTicketHolder = ticket.owner?.id === requestingUser.id;
     const isAdmin = requestingUser.role === UserRole.ADMIN;
 
     if (!isTicketHolder && !isAdmin) {
       throw new ForbiddenException(
-          'Only the ticket holder or an admin can refund tickets.',
+        'Only the ticket holder or an admin can refund tickets.',
       );
     }
 
     ticket.status = transition(ticket.status, TicketStatus.REFUNDED);
 
-    return this.ticketRepository.save(ticket);
+    const saved = await this.ticketRepository.save(ticket);
+    await this.realtimeService.publishAvailability(ticket.event.id);
+    await this.waitlistService.notifyNextWaitingUser(ticket.event.id);
+
+    const eventTitle = saved.event?.title ?? `Event #${saved.event?.id}`;
+    this.realtimeService.publishPersonalTicketUpdate(saved, eventTitle);
+
+    return saved;
   }
 
   // ─── Scan (by organizer or admin at the venue entrance) ──────────────────────
@@ -195,13 +287,12 @@ export class TicketsService extends BaseService<Ticket> {
   async scanTicket(ticketId: number, requestingUser: User): Promise<Ticket> {
     const ticket = await this.findTicketById(ticketId);
 
-    const isEventOrganizer =
-        ticket.event.organizer?.id === requestingUser.id;
+    const isEventOrganizer = ticket.event.organizer?.id === requestingUser.id;
     const isAdmin = requestingUser.role === UserRole.ADMIN;
 
     if (!isEventOrganizer && !isAdmin) {
       throw new ForbiddenException(
-          'Only the event organizer or an admin can scan tickets.',
+        'Only the event organizer or an admin can scan tickets.',
       );
     }
 
@@ -209,7 +300,14 @@ export class TicketsService extends BaseService<Ticket> {
     // Throws if ticket is already SCANNED, CANCELLED, or REFUNDED
     ticket.status = transition(ticket.status, TicketStatus.SCANNED);
 
-    return this.ticketRepository.save(ticket);
+    const saved = await this.ticketRepository.save(ticket);
+
+    const eventTitle = saved.event?.title ?? `Event #${saved.event?.id}`;
+    this.realtimeService.publishPersonalTicketUpdate(saved, eventTitle);
+
+    await this.fireTicketScannedWebhook(saved);
+
+    return saved;
   }
 
   // ─── Verify by QR token (organizer scans QR code at entrance) ───────────────
@@ -226,13 +324,20 @@ export class TicketsService extends BaseService<Ticket> {
 
     if (!isEventOrganizer && !isAdmin) {
       throw new ForbiddenException(
-          'Only the event organizer or an admin can verify tickets.',
+        'Only the event organizer or an admin can verify tickets.',
       );
     }
 
     ticket.status = transition(ticket.status, TicketStatus.SCANNED);
 
-    return this.ticketRepository.save(ticket);
+    const saved = await this.ticketRepository.save(ticket);
+
+    const eventTitle = saved.event?.title ?? `Event #${saved.event?.id}`;
+    this.realtimeService.publishPersonalTicketUpdate(saved, eventTitle);
+
+    await this.fireTicketScannedWebhook(saved);
+
+    return saved;
   }
 
   // ─── Queries ─────────────────────────────────────────────────────────────────
@@ -241,6 +346,38 @@ export class TicketsService extends BaseService<Ticket> {
     return this.ticketRepository.find({
       where: { owner: { id: owner.id } },
     });
+  }
+  
+  private async fireTicketScannedWebhook(ticket: Ticket): Promise<void> {
+    const webhookUrl = this.configService.get<string>(
+        'TICKET_SCANNED_WEBHOOK_URL',
+    );
+    if (!webhookUrl) return;
+
+    const payload = {
+      event_type:   'ticket.scanned',
+      ticketId:     ticket.id,
+      qrToken:      ticket.qrToken,
+      eventId:      ticket.event?.id,
+      eventTitle:   ticket.event?.title,
+      ownerEmail:   ticket.owner?.email,
+      ownerUsername: ticket.owner?.username,
+      seat:         ticket.seat,
+      scannedAt:    new Date().toISOString(),
+    };
+
+    try {
+      await firstValueFrom(
+          this.httpService.post(webhookUrl, payload, { timeout: 5_000 }),
+      );
+      this.logger.log(
+          `Webhook ticket.scanned sent for ticket #${ticket.id}`,
+      );
+    } catch (err) {
+      this.logger.warn(
+          `Webhook ticket.scanned failed for ticket #${ticket.id}: ${(err as Error).message}`,
+      );
+    }
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
@@ -252,6 +389,4 @@ export class TicketsService extends BaseService<Ticket> {
     }
     return ticket;
   }
-
-
 }

@@ -5,6 +5,14 @@ export class CreateTicketDto {
   @IsPositive()
   eventId: number;
 
+  @IsInt()
+  @IsPositive()
+  tierId: number;
+
+  @IsOptional()
+  @IsString()
+  promoCode?: string;
+
   @IsOptional()
   @IsString()
   seat?: string;

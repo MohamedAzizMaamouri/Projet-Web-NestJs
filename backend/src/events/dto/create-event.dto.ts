@@ -47,6 +47,10 @@ export class CreateEventDto {
   @IsFutureDate()
   date: string;
 
+  @IsOptional()
+  @IsDateString()
+  salesClosedAt?: string;
+
   @IsString()
   @IsNotEmpty()
   location: string;

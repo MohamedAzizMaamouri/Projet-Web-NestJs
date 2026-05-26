@@ -1,0 +1,101 @@
+1. Règles Métier Manquantes
+    1.1. Vérification de la capacité avant achat CRITIQUE
+        Problème : Deux utilisateurs peuvent acheter simultanément le dernier ticket disponible si la
+        vérification de capacité n'est pas atomique.
+        Règle : Avant de créer un ticket, vérifier en base (avec un verrou pessimiste ou une transaction
+        SELECT FOR UPDATE) que event.capacity > tickets_vendus. Rejeter l'achat avec une erreur
+        métier explicite si la salle est pleine.
+        Entité à ajouter : Un champ calculé ticketsRemaining sur Event, mis à jour de façon atomique.
+    1.2. Un seul ticket par utilisateur par événement CRITIQUE
+        Problème : Rien n'empêche un même attendee d'acheter 10 tickets pour le même event et de
+        revendre les places.
+        Règle : Ajouter une contrainte UNIQUE(event_id, owner_id) sur la table tickets. Gérer l'erreur de
+        contrainte en service et retourner un message métier clair : 'Vous possédez déjà un ticket pour
+        cet événement'.
+        Exception possible : Prévoir un champ maxTicketsPerUser sur Event pour les événements qui
+        autorisent plusieurs places (ex. : spectacle en famille).
+    1.3. Statuts du ticket et transitions valides CRITIQUE
+        Problème : Le champ status existe sur Ticket mais aucune machine d'états ne contrôle les
+        transitions autorisées.
+        Règle : Définir les statuts : PENDING ® CONFIRMED ® CANCELLED / REFUNDED. Interdire
+        toute transition invalide en service (ex. : impossible de passer de CANCELLED à CONFIRMED).
+        Seul l'organizer peut annuler un event et déclencher le statut REFUNDED en masse.
+        Impact : Garantit la cohérence des données et simplifie la logique des webhooks.
+    1.4. Statuts de l'événement CRITIQUE
+        Problème : Un event n'a pas de cycle de vie explicite : il peut être modifié ou supprimé après que
+        des tickets ont été vendus, ce qui est incohérent.
+        Règle : Ajouter un champ status sur Event : DRAFT ® PUBLISHED ® ONGOING ® ENDED /
+        CANCELLED. Interdire la vente de tickets si status != PUBLISHED. Interdire la suppression d'un
+        event PUBLISHED (seulement CANCEL avec remboursement).
+        Règle complémentaire : Un organizer ne peut modifier les infos critiques (date, lieu) que si
+        aucun ticket n'a encore été vendu, ou envoyer une annonce automatique aux acheteurs dans le
+        cas contraire.
+    1.5. Date de l'événement dans le futur
+        IMPORTANTE
+        Problème : Rien n'empêche de créer un event avec une date passée ou une date dans 10
+        secondes, rendant l'achat de ticket immédiatement inutile.
+        Règle : Valider à la création et à la modification : event.date > now() + 24h minimum. Ajouter une
+        date de clôture des ventes : salesClosedAt (ex. : 1h avant l'event).
+    1.6. Capacité minimale et cohérence du siège
+        IMPORTANTE
+        Problème : Le champ seat sur Ticket est une chaîne libre. Deux tickets peuvent avoir le même
+        siège pour le même event.
+        Règle : Ajouter une contrainte UNIQUE(event_id, seat). Valider que le siège fourni à l'achat est
+        dans la plage [1..event.capacity]. Si les sièges sont auto-assignés, les générer côté serveur, pas
+        côté client.
+    2. Nouvelles Fonctionnalités Métier
+    2.1. Annulation et Remboursement de ticket CRITIQUE
+        Manque actuel : Un attendee ne peut pas annuler son ticket. Il n'y a aucun flux de
+        remboursement.
+        Fonctionnalité : Permettre l'annulation dans un délai configurable avant l'événement (ex. :
+        jusqu'à 48h avant). Passer le ticket à CANCELLED, libérer la place (incrémenter
+        ticketsRemaining), et déclencher un webhook vers le service de remboursement.
+        Règle : Si l'annulation vient de l'organizer (event CANCELLED), tous les tickets passent à
+        REFUNDED automatiquement via un job batch.
+    2.2. Liste d'attente (Waitlist)
+    IMPORTANTE
+        Manque actuel : Quand un event est complet, l'utilisateur reçoit une erreur et n'a aucun recours.
+        Fonctionnalité : Proposer de rejoindre une liste d'attente quand capacity = 0. Nouvelle entité
+        WaitlistEntry(id, event, user, position, joinedAt). Quand un ticket est annulé, notifier
+        automatiquement le premier de la liste (via webhook/SSE) avec un délai pour confirmer l'achat.
+        Règle : Une place libérée est réservée pendant X minutes pour le premier en liste, puis ouverte à
+        tous si non confirmée.
+    2.3. Codes Promo & Réductions
+        IMPORTANTE
+        Manque actuel : Aucun mécanisme de prix dynamique ou de code de réduction.
+        Fonctionnalité : Nouvelle entité PromoCode(id, code, event, discountPercent, maxUses,
+        usedCount, expiresAt). À l'achat, le client peut soumettre un code ; le service valide l'existence,
+        l'expiration, le quota restant, et applique la réduction.
+        Règle : Incrémenter usedCount de façon atomique (transaction) pour éviter le dépassement du
+        quota en cas de requêtes concurrentes.
+    2.4. Prix du ticket et catégories de places CRITIQUE
+        Manque actuel : Le modèle Ticket n'a pas de champ price. On ne sait pas combien coûte un
+        ticket ni quel est le revenu de l'organizer.
+        Fonctionnalité : Ajouter price sur Event (ou une entité TicketTier pour plusieurs catégories : VIP,
+        Standard, Early Bird). Enregistrer le prixPayé au moment de l'achat sur Ticket (pricePaid) pour
+        garder un historique même si le prix change.
+        Dashboard : Permet au resolver GraphQL du dashboard organizer de calculer revenue =
+        SUM(pricePaid) et d'afficher les statistiques de ventes.
+    2.5. Notation et Avis post-événement
+        OPTIONNELLE
+        Fonctionnalité : Après la fin d'un event (status = ENDED), permettre aux attendees ayant un
+        ticket CONFIRMED de laisser une note (1-5) et un commentaire.
+        Entité : Review(id, event, author, rating, comment, createdAt). Contrainte : un seul avis par
+        utilisateur par event.
+        Règle : Bloquer les avis si l'event n'est pas encore ENDED ou si l'utilisateur n'a pas de ticket
+        CONFIRMED pour cet event.
+    2.6. Favoris et Abonnement à un Organizer
+        OPTIONNELLE
+        Fonctionnalité : Un attendee peut suivre un organizer pour être notifié de ses nouveaux
+        événements. Table de jointure UserFollowsOrganizer.
+        Règle : Quand un organizer publie un nouvel event (DRAFT ® PUBLISHED), un job envoie une
+        notification (webhook) à tous ses abonnés.
+        Bénéfice : Augmente la rétention et justifie davantage l'usage des webhooks.
+    2.7. Billets avec QR Code et Vérification à l'entrée
+        IMPORTANTE
+        Manque actuel : Un ticket n'a aucun mécanisme de vérification physique à l'entrée de l'event.
+        Fonctionnalité : Générer un token unique signé (JWT ou UUID v4) à l'achat, stocké sur
+        Ticket.qrToken. Exposer un endpoint sécurisé POST /tickets/verify { qrToken } réservé à
+        l'organizer, qui valide le token et passe le ticket à SCANNED.
+        Règle : Un ticket SCANNED ne peut pas être re-scanné (évite le partage de QR code). Un ticket
+        CANCELLED ou REFUNDED est rejeté à la vérification.

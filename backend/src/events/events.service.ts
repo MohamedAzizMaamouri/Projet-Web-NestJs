@@ -1,18 +1,33 @@
-import {BadRequestException, ForbiddenException, Injectable,} from '@nestjs/common';
-import {InjectRepository, InjectRepository as InjectTicketRepository} from '@nestjs/typeorm';
-import {Repository} from 'typeorm';
-import {BaseService} from '../common/base.service';
-import {Event, EventStatus} from './event.entity';
-import {CreateEventDto} from './dto/create-event.dto';
-import {UpdateEventDto} from './dto/update-event.dto';
-import {User, UserRole} from '../users/user.entity';
-import {CategoriesService} from '../categories/categories.service';
-import {Ticket, TicketStatus} from '../tickets/ticket.entity';
-import {transitionEvent} from "./event-status.machine";
-import {transition} from '../tickets/ticket-status.machine';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+import {
+  InjectRepository,
+  InjectRepository as InjectTicketRepository,
+} from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
+import { firstValueFrom } from 'rxjs';
+import { BaseService } from '../common/base.service';
+import { Event, EventStatus } from './event.entity';
+import { CreateEventDto } from './dto/create-event.dto';
+import { UpdateEventDto } from './dto/update-event.dto';
+import { User, UserRole } from '../users/user.entity';
+import { CategoriesService } from '../categories/categories.service';
+import { Ticket, TicketStatus } from '../tickets/ticket.entity';
+import { transitionEvent } from './event-status.machine';
+import { transition } from '../tickets/ticket-status.machine';
+import { RealtimeService } from '../realtime/realtime.service';
+import { FollowsService } from '../follows/follows.service';
 
 @Injectable()
 export class EventsService extends BaseService<Event> {
+  private readonly logger = new Logger(EventsService.name);
+
   constructor(
       @InjectRepository(Event)
       private readonly eventRepository: Repository<Event>,
@@ -21,6 +36,10 @@ export class EventsService extends BaseService<Event> {
       private readonly ticketRepository: Repository<Ticket>,
 
       private readonly categoriesService: CategoriesService,
+      private readonly realtimeService: RealtimeService,
+      private readonly followsService: FollowsService,
+      private readonly httpService: HttpService,
+      private readonly configService: ConfigService,
   ) {
     super(eventRepository);
   }
@@ -34,6 +53,12 @@ export class EventsService extends BaseService<Event> {
   }
 
   async createEvent(dto: CreateEventDto, organizer: User): Promise<Event> {
+    const eventDate = this.parseAndValidateEventDate(dto.date);
+    const salesClosedAt = this.resolveSalesClosedAt(
+      eventDate,
+      dto.salesClosedAt,
+    );
+
     const category = await this.categoriesService.findOne({
       where: { id: dto.categoryId },
     });
@@ -41,40 +66,49 @@ export class EventsService extends BaseService<Event> {
     const event = this.eventRepository.create({
       title: dto.title,
       description: dto.description,
-      date: new Date(dto.date),
+      date: eventDate,
+      salesClosedAt,
       location: dto.location,
       capacity: dto.capacity,
       price: dto.price ?? 0,
       category,
       organizer,
-      status: EventStatus.PUBLISHED
+      status: EventStatus.PUBLISHED,
     });
 
-    return this.eventRepository.save(event);
+    const saved = await this.eventRepository.save(event);
+
+    this.followsService.notifyFollowersOfNewEvent(saved).catch((err) =>
+      this.logger.warn(
+        `Follow notification failed for event #${saved.id}: ${(err as Error).message}`,
+      ),
+    );
+
+    return saved;
   }
 
   async updateEvent(
-      id: number,
-      dto: UpdateEventDto,
-      requestingUser: User,
+    id: number,
+    dto: UpdateEventDto,
+    requestingUser: User,
   ): Promise<Event> {
     const event = await this.getEventById(id);
 
     if (
-        requestingUser.role !== UserRole.ADMIN &&
-        event.organizer.id !== requestingUser.id
+      requestingUser.role !== UserRole.ADMIN &&
+      event.organizer.id !== requestingUser.id
     ) {
       throw new ForbiddenException(
-          'Only the organizer or an admin can update this event',
+        'Only the organizer or an admin can update this event',
       );
     }
 
     if (
-        event.status === EventStatus.ENDED ||
-        event.status === EventStatus.CANCELLED
+      event.status === EventStatus.ENDED ||
+      event.status === EventStatus.CANCELLED
     ) {
       throw new BadRequestException(
-          `Cannot update an event that is already ${event.status}`,
+        `Cannot update an event that is already ${event.status}`,
       );
     }
 
@@ -89,7 +123,14 @@ export class EventsService extends BaseService<Event> {
     Object.assign(event, rest);
 
     if ((dto as any).date) {
-      event.date = new Date((dto as any).date);
+      event.date = this.parseAndValidateEventDate((dto as any).date);
+    }
+
+    if ((dto as any).salesClosedAt || (dto as any).date) {
+      event.salesClosedAt = this.resolveSalesClosedAt(
+        event.date,
+        (dto as any).salesClosedAt,
+      );
     }
 
     return this.eventRepository.save(event);
@@ -99,21 +140,21 @@ export class EventsService extends BaseService<Event> {
     const event = await this.getEventById(id);
 
     if (
-        requestingUser.role !== UserRole.ADMIN &&
-        event.organizer.id !== requestingUser.id
+      requestingUser.role !== UserRole.ADMIN &&
+      event.organizer.id !== requestingUser.id
     ) {
       throw new ForbiddenException(
-          'Only the organizer or an admin can delete this event',
+        'Only the organizer or an admin can delete this event',
       );
     }
 
     if (event.status !== EventStatus.PUBLISHED) {
       throw new BadRequestException(
-          `Cannot delete an event with status "${event.status}". Cancel it instead.`,
+        `Cannot delete an event with status "${event.status}". Cancel it instead.`,
       );
     }
-    
-    await this.refundAllTicketsForEvent(id)
+
+    await this.refundAllTicketsForEvent(id);
 
     await this.eventRepository.remove(event);
   }
@@ -122,53 +163,63 @@ export class EventsService extends BaseService<Event> {
     const event = await this.getEventById(id);
 
     if (
-        requestingUser.role !== UserRole.ADMIN &&
-        event.organizer.id !== requestingUser.id
+      requestingUser.role !== UserRole.ADMIN &&
+      event.organizer.id !== requestingUser.id
     ) {
       throw new ForbiddenException(
-          'Only the organizer or an admin can cancel this event',
+        'Only the organizer or an admin can cancel this event',
       );
     }
 
     if (event.status === EventStatus.ENDED) {
       throw new BadRequestException(
-          `Cannot cancel an event with status "${event.status}".`,
+        `Cannot cancel an event with status "${event.status}".`,
       );
     }
 
-    await this.refundAllTicketsForEvent(id)
+    await this.refundAllTicketsForEvent(id);
 
-    await this.transitionStatus(id, EventStatus.CANCELLED, requestingUser);
+    const previousStatus = event.status;
+    const updated = await this.transitionStatus(
+        id,
+        EventStatus.CANCELLED,
+        requestingUser,
+    );
+
+    this.realtimeService.publishEventStatus(updated, previousStatus);
+
+    await this.fireEventStatusWebhook(updated, previousStatus);
   }
 
   // ─── Revenue ─────────────────────────────────────────────────────────────────
 
-  /**
-   * Returns total revenue for an event: SUM of pricePaid across all CONFIRMED tickets.
-   * Only the event's organizer or an admin can access this.
-   */
   async getEventRevenue(
-      eventId: number,
-      requestingUser: User,
-  ): Promise<{ eventId: number; eventTitle: string; revenue: number; ticketsSold: number }> {
+    eventId: number,
+    requestingUser: User,
+  ): Promise<{
+    eventId: number;
+    eventTitle: string;
+    revenue: number;
+    ticketsSold: number;
+  }> {
     const event = await this.getEventById(eventId);
 
     if (
-        requestingUser.role !== UserRole.ADMIN &&
-        event.organizer.id !== requestingUser.id
+      requestingUser.role !== UserRole.ADMIN &&
+      event.organizer.id !== requestingUser.id
     ) {
       throw new ForbiddenException(
-          'Only the event organizer or an admin can view revenue.',
+        'Only the event organizer or an admin can view revenue.',
       );
     }
 
     const result = await this.ticketRepository
-        .createQueryBuilder('ticket')
-        .select('SUM(ticket.pricePaid)', 'revenue')
-        .addSelect('COUNT(ticket.id)', 'ticketsSold')
-        .where('ticket.eventId = :eventId', { eventId })
-        .andWhere('ticket.status = :status', { status: TicketStatus.CONFIRMED })
-        .getRawOne();
+      .createQueryBuilder('ticket')
+      .select('SUM(ticket.pricePaid)', 'revenue')
+      .addSelect('COUNT(ticket.id)', 'ticketsSold')
+      .where('ticket.eventId = :eventId', { eventId })
+      .andWhere('ticket.status = :status', { status: TicketStatus.CONFIRMED })
+      .getRawOne();
 
     return {
       eventId: event.id,
@@ -195,23 +246,102 @@ export class EventsService extends BaseService<Event> {
   }
 
   async transitionStatus(
-      id: number,
-      newStatus: EventStatus,
-      requestingUser: User,
+    id: number,
+    newStatus: EventStatus,
+    requestingUser: User,
   ): Promise<Event> {
     const event = await this.getEventById(id);
     this.assertOwnerOrAdmin(event, requestingUser);
-    
+
+    const previousStatus = event.status;
     event.status = transitionEvent(event.status, newStatus);
-    return this.eventRepository.save(event);
+    const updated = await this.eventRepository.save(event);
+
+    this.realtimeService.publishEventStatus(updated, previousStatus);
+
+    await this.fireEventStatusWebhook(updated, previousStatus);
+
+    return updated;
   }
-  
+
+
+  private async fireEventStatusWebhook(
+      event: Event,
+      previousStatus: EventStatus,
+  ): Promise<void> {
+    const webhookUrl = this.configService.get<string>(
+        'EVENT_STATUS_WEBHOOK_URL',
+    );
+    if (!webhookUrl) return;
+
+    const payload = {
+      event_type:      'event.status_changed',
+      eventId:         event.id,
+      title:           event.title,
+      location:        event.location,
+      date:            event.date,
+      previousStatus,
+      newStatus:       event.status,
+      organizerEmail:  event.organizer?.email,
+      changedAt:       new Date().toISOString(),
+    };
+
+    try {
+      await firstValueFrom(
+          this.httpService.post(webhookUrl, payload, { timeout: 5_000 }),
+      );
+      this.logger.log(
+          `Webhook event.status_changed sent for event #${event.id} (${previousStatus} → ${event.status})`,
+      );
+    } catch (err) {
+      // Le webhook ne doit jamais bloquer la logique métier
+      this.logger.warn(
+          `Webhook event.status_changed failed for event #${event.id}: ${(err as Error).message}`,
+      );
+    }
+  }
+
 
   private assertOwnerOrAdmin(event: Event, user: User): void {
     if (user.role !== UserRole.ADMIN && event.organizer.id !== user.id) {
       throw new ForbiddenException(
-          'Only the organizer or an admin can perform this action',
+        'Only the organizer or an admin can perform this action',
       );
     }
+  }
+
+  private parseAndValidateEventDate(value: string): Date {
+    const eventDate = new Date(value);
+    const minDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    if (Number.isNaN(eventDate.getTime()) || eventDate <= minDate) {
+      throw new BadRequestException(
+        'Event date must be at least 24 hours in the future',
+      );
+    }
+
+    return eventDate;
+  }
+
+  private resolveSalesClosedAt(eventDate: Date, salesClosedAt?: string): Date {
+    const resolved = salesClosedAt
+      ? new Date(salesClosedAt)
+      : new Date(eventDate.getTime() - 60 * 60 * 1000);
+
+    if (Number.isNaN(resolved.getTime())) {
+      throw new BadRequestException('salesClosedAt must be a valid date');
+    }
+
+    if (resolved >= eventDate) {
+      throw new BadRequestException(
+        'salesClosedAt must be before the event date',
+      );
+    }
+
+    if (resolved <= new Date()) {
+      throw new BadRequestException('salesClosedAt must be in the future');
+    }
+
+    return resolved;
   }
 }

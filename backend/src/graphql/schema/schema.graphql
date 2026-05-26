@@ -20,6 +20,15 @@ type User {
     email: String!
     role: UserRole!
     createdAt: String!
+    followerCount: Int
+}
+
+type TicketTier {
+    id: Int!
+    name: String!
+    price: Float!
+    capacity: Int!
+    sold: Int!
 }
 
 type Event {
@@ -30,6 +39,7 @@ type Event {
     location: String!
     capacity: Int!
     ticketsLeft: Int!
+    tiers: [TicketTier!]!
     category: Category!
     organizer: User!
     createdAt: String!
@@ -38,13 +48,30 @@ type Event {
 type Ticket {
     id: Int!
     event: Event!
+    tier: TicketTier!
     seat: String
     purchasedAt: String!
     status: TicketStatus!
+}
+
+
+type Follow {
+    id: Int!
+    organizer: User!
+    follower: User!
+    createdAt: String!
 }
 
 type Query {
     events(category: String, date: String): [Event!]!
     event(id: Int!): Event!
     myTickets: [Ticket!]!
+
+    myFollowedOrganizers: [User!]!
+    organizerFollowers(organizerId: Int!): [User!]!
+}
+
+type Mutation {
+    followOrganizer(organizerId: Int!): Follow!
+    unfollowOrganizer(organizerId: Int!): Boolean!
 }
