@@ -17,16 +17,17 @@ import {Event, EventStatus} from '../events/event.entity';
 import { EventsService } from '../events/events.service';
 import { transition } from './ticket-status.machine';
 import { firstValueFrom } from 'rxjs';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class TicketsService extends BaseService<Ticket> {
   constructor(
-    @InjectRepository(Ticket)
-    private readonly ticketRepository: Repository<Ticket>,
-    private readonly eventsService: EventsService,
-    private readonly httpService: HttpService,
-    private readonly configService: ConfigService,
-    private readonly dataSource: DataSource,
+      @InjectRepository(Ticket)
+      private readonly ticketRepository: Repository<Ticket>,
+      private readonly eventsService: EventsService,
+      private readonly httpService: HttpService,
+      private readonly configService: ConfigService,
+      private readonly dataSource: DataSource,
   ) {
     super(ticketRepository);
   }
@@ -36,11 +37,11 @@ export class TicketsService extends BaseService<Ticket> {
   async purchaseTicket(dto: CreateTicketDto, buyer: User): Promise<Ticket> {
     const saved = await this.dataSource.transaction(async (manager) => {
       const event = await manager
-        .getRepository(Event)
-        .createQueryBuilder('event')
-        .setLock('pessimistic_write')
-        .where('event.id = :id', { id: dto.eventId })
-        .getOne();
+          .getRepository(Event)
+          .createQueryBuilder('event')
+          .setLock('pessimistic_write')
+          .where('event.id = :id', { id: dto.eventId })
+          .getOne();
 
       if (!event) {
         throw new BadRequestException(`Event #${dto.eventId} not found`);
@@ -54,29 +55,29 @@ export class TicketsService extends BaseService<Ticket> {
 
       if (event.date <= new Date()) {
         throw new BadRequestException(
-          'Tickets can no longer be purchased: this event has already started or ended',
+            'Tickets can no longer be purchased: this event has already started or ended',
         );
       }
 
       const soldCount = await manager
-        .getRepository(Ticket)
-        .count({
-          where: 
-              { event: { id: event.id }, 
-                status: TicketStatus.CONFIRMED,
-              }
-        });
+          .getRepository(Ticket)
+          .count({
+            where:
+                { event: { id: event.id },
+                  status: TicketStatus.CONFIRMED,
+                }
+          });
 
       if (soldCount >= event.capacity) {
         throw new BadRequestException(
-          `This event is fully booked (capacity: ${event.capacity})`,
+            `This event is fully booked (capacity: ${event.capacity})`,
         );
       }
-      
+
       const numericPart = parseInt(dto.seat.replace(/^[A-Za-z\-]*/g, ''), 10);
       if (!isNaN(numericPart) && numericPart > event.capacity) {
         throw new BadRequestException(
-          `Seat "${dto.seat}" exceeds event capacity (${event.capacity})`,
+            `Seat "${dto.seat}" exceeds event capacity (${event.capacity})`,
         );
       }
 
@@ -85,7 +86,7 @@ export class TicketsService extends BaseService<Ticket> {
       });
       if (seatTaken) {
         throw new ConflictException(
-          `Seat "${dto.seat}" is already taken for this event`,
+            `Seat "${dto.seat}" is already taken for this event`,
         );
       }
 
@@ -101,6 +102,7 @@ export class TicketsService extends BaseService<Ticket> {
         status: confirmedStatus,
         // Stamp the price at purchase time — preserved even if event.price changes later
         pricePaid: event.price ?? 0,
+        qrToken: uuidv4(),
       });
 
       return manager.getRepository(Ticket).save(ticket);
@@ -177,7 +179,7 @@ export class TicketsService extends BaseService<Ticket> {
           'Only the ticket holder or an admin can refund tickets.',
       );
     }
-    
+
     ticket.status = transition(ticket.status, TicketStatus.REFUNDED);
 
     return this.ticketRepository.save(ticket);
@@ -205,6 +207,29 @@ export class TicketsService extends BaseService<Ticket> {
 
     // State machine validates: CONFIRMED → SCANNED
     // Throws if ticket is already SCANNED, CANCELLED, or REFUNDED
+    ticket.status = transition(ticket.status, TicketStatus.SCANNED);
+
+    return this.ticketRepository.save(ticket);
+  }
+
+  // ─── Verify by QR token (organizer scans QR code at entrance) ───────────────
+
+  async verifyTicket(qrToken: string, requestingUser: User): Promise<Ticket> {
+    const ticket = await this.ticketRepository.findOne({ where: { qrToken } });
+
+    if (!ticket) {
+      throw new NotFoundException('Invalid QR code — ticket not found.');
+    }
+
+    const isEventOrganizer = ticket.event.organizer?.id === requestingUser.id;
+    const isAdmin = requestingUser.role === UserRole.ADMIN;
+
+    if (!isEventOrganizer && !isAdmin) {
+      throw new ForbiddenException(
+          'Only the event organizer or an admin can verify tickets.',
+      );
+    }
+
     ticket.status = transition(ticket.status, TicketStatus.SCANNED);
 
     return this.ticketRepository.save(ticket);

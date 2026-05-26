@@ -6,16 +6,17 @@ import {
   JoinColumn,
   CreateDateColumn,
   Unique,
+  Index,
 } from 'typeorm';
 import { User } from '../users/user.entity';
 import { Event } from '../events/event.entity';
 
 export enum TicketStatus {
-  PENDING    = 'pending',      // created but not yet confirmed (payment pending)
-  CONFIRMED  = 'confirmed',    // purchase successful, ticket is valid
-  CANCELLED  = 'cancelled',    // cancelled by the attendee
-  REFUNDED   = 'refunded',     // cancelled by organizer (event cancelled) — refund triggered
-  SCANNED    = 'scanned',      // used at the venue entrance — cannot be re-scanned
+  PENDING    = 'pending',
+  CONFIRMED  = 'confirmed',
+  CANCELLED  = 'cancelled',
+  REFUNDED   = 'refunded',
+  SCANNED    = 'scanned',
 }
 
 @Entity('tickets')
@@ -26,6 +27,7 @@ export class Ticket {
 
   @ManyToOne(() => Event, { eager: true, nullable: false })
   @JoinColumn({ name: 'eventId' })
+  @Index('IDX_ticket_eventId')   // dedicated index for the FK — keeps UQ_ticket_event_seat free
   event: Event;
 
   @ManyToOne(() => User, { eager: true, nullable: false })
@@ -44,6 +46,9 @@ export class Ticket {
    */
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   pricePaid: number;
+
+  @Column({ unique: true, nullable: true })
+  qrToken: string;
 
   @Column({
     type: 'enum',

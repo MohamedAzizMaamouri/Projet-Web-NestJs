@@ -81,4 +81,21 @@ export class TicketsController {
   ) {
     return this.ticketsService.refundTicket(id, req.user as User);
   }
+
+  /**
+   * POST /tickets/verify
+   * Body: { "qrToken": "<uuid>" }
+   * Organizer scans a QR code at the venue — marks the ticket as SCANNED.
+   * Cannot be scanned twice — state machine blocks it.
+   */
+  @Post('verify')
+  @ApiBearerAuth()
+  @UseGuards(RolesGuard)
+  @Roles('organizer', 'admin')
+  verifyTicket(
+      @Body('qrToken') qrToken: string,
+      @Req() req: Request,
+  ) {
+    return this.ticketsService.verifyTicket(qrToken, req.user as User);
+  }
 }
