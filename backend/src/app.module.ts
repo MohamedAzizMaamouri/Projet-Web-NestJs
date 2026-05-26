@@ -16,6 +16,7 @@ import { User } from './users/user.entity';
 import { Event } from './events/event.entity';
 import { Category } from './categories/category.entity';
 import { Ticket } from './tickets/ticket.entity';
+import { TicketTier } from './tickets/ticket-tier.entity';
 import { PromoCode } from './promo-codes/promo-code.entity';
 import { WaitlistEntry } from './waitlist/waitlist-entry.entity';
 
@@ -34,7 +35,7 @@ import { WaitlistEntry } from './waitlist/waitlist-entry.entity';
         username: config.get<string>('DB_USERNAME'),
         password: config.get<string>('DB_PASSWORD'),
         database: config.get<string>('DB_NAME'),
-        entities: [User, Event, Category, Ticket, PromoCode, WaitlistEntry],
+        entities: [User, Event, Category, Ticket, TicketTier, PromoCode, WaitlistEntry],
         synchronize: true,
         charset: 'utf8mb4',
       }),

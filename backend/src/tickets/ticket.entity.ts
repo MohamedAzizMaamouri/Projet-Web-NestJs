@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { User } from '../users/user.entity';
 import { Event } from '../events/event.entity';
+import { TicketTier } from './ticket-tier.entity';
 
 export enum TicketStatus {
   PENDING = 'pending',
@@ -37,6 +38,10 @@ export class Ticket {
 
   @Column({ nullable: true })
   seat: string;
+
+  @ManyToOne(() => TicketTier, { eager: true, nullable: false })
+  @JoinColumn({ name: 'tierId' })
+  tier: TicketTier;
 
   @Column({ type: 'datetime' })
   purchasedAt: Date;

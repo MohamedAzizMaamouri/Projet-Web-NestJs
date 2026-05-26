@@ -22,6 +22,14 @@ type User {
     createdAt: String!
 }
 
+type TicketTier {
+    id: Int!
+    name: String!
+    price: Float!
+    capacity: Int!
+    sold: Int!
+}
+
 type Event {
     id: Int!
     title: String!
@@ -30,6 +38,7 @@ type Event {
     location: String!
     capacity: Int!
     ticketsLeft: Int!
+    tiers: [TicketTier!]!
     category: Category!
     organizer: User!
     createdAt: String!
@@ -38,6 +47,7 @@ type Event {
 type Ticket {
     id: Int!
     event: Event!
+    tier: TicketTier!
     seat: String
     purchasedAt: String!
     status: TicketStatus!

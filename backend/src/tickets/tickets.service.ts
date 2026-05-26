@@ -11,6 +11,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { BaseService } from '../common/base.service';
 import { Ticket, TicketStatus } from './ticket.entity';
+import { TicketTier } from './ticket-tier.entity';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { User, UserRole } from '../users/user.entity';
 import { Event, EventStatus } from '../events/event.entity';
@@ -90,13 +91,27 @@ export class TicketsService extends BaseService<Ticket> {
         buyer.id,
       );
 
-      const soldCount = await manager.getRepository(Ticket).count({
-        where: { event: { id: event.id }, status: TicketStatus.CONFIRMED },
+      const tier = await manager.getRepository(TicketTier).findOne({
+        where: { id: dto.tierId, event: { id: event.id } },
       });
 
-      if (soldCount >= event.capacity) {
+      if (!tier) {
         throw new BadRequestException(
-          `This event is fully booked (capacity: ${event.capacity})`,
+            `Tier #${dto.tierId} does not exist for event #${dto.eventId}`,
+        );
+      }
+
+      const soldInTier = await manager.getRepository(Ticket).count({
+        where: {
+          event: { id: event.id },
+          tier: { id: tier.id },
+          status: TicketStatus.CONFIRMED,
+        },
+      });
+
+      if (soldInTier >= tier.capacity) {
+        throw new BadRequestException(
+            `Tier "${tier.name}" is fully booked (capacity: ${tier.capacity})`,
         );
       }
 
@@ -121,7 +136,7 @@ export class TicketsService extends BaseService<Ticket> {
       // Start at PENDING, immediately confirm (payment is synchronous for now)
       const initialStatus = TicketStatus.PENDING;
       const confirmedStatus = transition(initialStatus, TicketStatus.CONFIRMED);
-      const originalPrice = Number(event.price ?? 0);
+      const originalPrice = Number(tier.price ?? 0);
       const promoResult = dto.promoCode
         ? await this.promoCodesService.applyPromoCode(
             manager,
@@ -131,13 +146,13 @@ export class TicketsService extends BaseService<Ticket> {
           )
         : null;
 
-      const ticket = this.ticketRepository.create({
+      const ticket = manager.getRepository(Ticket).create({
         event,
         owner: buyer,
+        tier,
         seat: dto.seat ?? null,
         purchasedAt: new Date(),
         status: confirmedStatus,
-        // Stamp the price at purchase time — preserved even if event.price changes later
         pricePaid: promoResult?.pricePaid ?? originalPrice,
         qrToken: uuidv4(),
       });

@@ -1,5 +1,6 @@
 ﻿import { GraphQLContext } from '../context';
-import { Ticket } from '../../tickets/ticket.entity';
+import { Ticket, TicketStatus } from '../../tickets/ticket.entity';
+import { TicketTier } from '../../tickets/ticket-tier.entity';
 
 export const Event = {
     ticketsLeft: async (
@@ -8,9 +9,28 @@ export const Event = {
         { db }: GraphQLContext,
     ) => {
         const sold = await db.count(Ticket, {
-            where: { event: { id: parent.id } },
+            where: { event: { id: parent.id }, status: TicketStatus.CONFIRMED },
         });
         return parent.capacity - sold;
+    },
+
+    tiers: async (
+        parent: { id: number },
+        _args: unknown,
+        { db }: GraphQLContext,
+    ) => {
+        const tiers = await db.find(TicketTier, {
+            where: { event: { id: parent.id } },
+        });
+
+        return Promise.all(
+            tiers.map(async (tier) => {
+                const sold = await db.count(Ticket, {
+                    where: { tier: { id: tier.id }, status: TicketStatus.CONFIRMED },
+                });
+                return { ...tier, sold };
+            }),
+        );
     },
 
     date: (parent: { date: Date }) => {
