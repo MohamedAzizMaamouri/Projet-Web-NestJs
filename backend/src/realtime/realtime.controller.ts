@@ -36,4 +36,21 @@ export class RealtimeController {
       })),
     );
   }
+
+  /**
+   * GET /realtime/events/:id/messages
+   * Server-Sent Events stream for announcements, Q&A, and waitlist notices.
+   */
+  @Sse('events/:id/messages')
+  streamMessages(
+    @Param('id', ParseIntPipe) eventId: number,
+  ): Observable<MessageEvent> {
+    return this.realtimeService.messages$.pipe(
+      filter((message) => message.eventId === eventId),
+      map((message) => ({
+        type: message.type,
+        data: message,
+      })),
+    );
+  }
 }

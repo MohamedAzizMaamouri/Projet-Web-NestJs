@@ -7,5 +7,9 @@ export class CreateTicketDto {
 
   @IsOptional()
   @IsString()
+  promoCode?: string;
+
+  @IsOptional()
+  @IsString()
   seat?: string;
 }

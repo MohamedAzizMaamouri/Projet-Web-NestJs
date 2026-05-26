@@ -15,7 +15,12 @@ export interface AvailabilityUpdate {
 
 export interface RealtimeMessage {
   eventId: number;
-  type: 'announcement' | 'question' | 'message' | 'purchase-confirmation';
+  type:
+    | 'announcement'
+    | 'question'
+    | 'message'
+    | 'purchase-confirmation'
+    | 'waitlist';
   text: string;
   sender?: string;
   sentAt: string;

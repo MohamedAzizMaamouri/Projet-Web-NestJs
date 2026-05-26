@@ -18,7 +18,9 @@ import { EventsService } from '../events/events.service';
 import { transition } from './ticket-status.machine';
 import { firstValueFrom } from 'rxjs';
 import { v4 as uuidv4 } from 'uuid';
+import { PromoCodesService } from '../promo-codes/promo-codes.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { WaitlistService } from '../waitlist/waitlist.service';
 
 @Injectable()
 export class TicketsService extends BaseService<Ticket> {
@@ -29,7 +31,9 @@ export class TicketsService extends BaseService<Ticket> {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly dataSource: DataSource,
+    private readonly promoCodesService: PromoCodesService,
     private readonly realtimeService: RealtimeService,
+    private readonly waitlistService: WaitlistService,
   ) {
     super(ticketRepository);
   }
@@ -81,6 +85,11 @@ export class TicketsService extends BaseService<Ticket> {
         );
       }
 
+      await this.waitlistService.assertUserCanPurchaseReservedSeat(
+        event.id,
+        buyer.id,
+      );
+
       const soldCount = await manager.getRepository(Ticket).count({
         where: { event: { id: event.id }, status: TicketStatus.CONFIRMED },
       });
@@ -112,6 +121,15 @@ export class TicketsService extends BaseService<Ticket> {
       // Start at PENDING, immediately confirm (payment is synchronous for now)
       const initialStatus = TicketStatus.PENDING;
       const confirmedStatus = transition(initialStatus, TicketStatus.CONFIRMED);
+      const originalPrice = Number(event.price ?? 0);
+      const promoResult = dto.promoCode
+        ? await this.promoCodesService.applyPromoCode(
+            manager,
+            event.id,
+            dto.promoCode,
+            originalPrice,
+          )
+        : null;
 
       const ticket = this.ticketRepository.create({
         event,
@@ -120,7 +138,7 @@ export class TicketsService extends BaseService<Ticket> {
         purchasedAt: new Date(),
         status: confirmedStatus,
         // Stamp the price at purchase time — preserved even if event.price changes later
-        pricePaid: event.price ?? 0,
+        pricePaid: promoResult?.pricePaid ?? originalPrice,
         qrToken: uuidv4(),
       });
 
@@ -144,6 +162,7 @@ export class TicketsService extends BaseService<Ticket> {
     });
 
     const fullEvent = await this.eventsService.getEventById(dto.eventId);
+    await this.waitlistService.markClaimed(dto.eventId, buyer.id);
     await this.realtimeService.publishAvailability(dto.eventId);
     this.realtimeService.publishMessage({
       eventId: dto.eventId,
@@ -208,6 +227,7 @@ export class TicketsService extends BaseService<Ticket> {
 
     const saved = await this.ticketRepository.save(ticket);
     await this.realtimeService.publishAvailability(ticket.event.id);
+    await this.waitlistService.notifyNextWaitingUser(ticket.event.id);
     return saved;
   }
 
@@ -227,6 +247,7 @@ export class TicketsService extends BaseService<Ticket> {
 
     const saved = await this.ticketRepository.save(ticket);
     await this.realtimeService.publishAvailability(ticket.event.id);
+    await this.waitlistService.notifyNextWaitingUser(ticket.event.id);
     return saved;
   }
 

@@ -9,11 +9,15 @@ import { EventsModule } from './events/events.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { CategoriesModule } from './categories/categories.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { PromoCodesModule } from './promo-codes/promo-codes.module';
+import { WaitlistModule } from './waitlist/waitlist.module';
 
 import { User } from './users/user.entity';
 import { Event } from './events/event.entity';
 import { Category } from './categories/category.entity';
 import { Ticket } from './tickets/ticket.entity';
+import { PromoCode } from './promo-codes/promo-code.entity';
+import { WaitlistEntry } from './waitlist/waitlist-entry.entity';
 
 @Module({
   imports: [
@@ -30,7 +34,7 @@ import { Ticket } from './tickets/ticket.entity';
         username: config.get<string>('DB_USERNAME'),
         password: config.get<string>('DB_PASSWORD'),
         database: config.get<string>('DB_NAME'),
-        entities: [User, Event, Category, Ticket],
+        entities: [User, Event, Category, Ticket, PromoCode, WaitlistEntry],
         synchronize: true,
         charset: 'utf8mb4',
       }),
@@ -42,6 +46,8 @@ import { Ticket } from './tickets/ticket.entity';
     TicketsModule,
     CategoriesModule,
     RealtimeModule,
+    PromoCodesModule,
+    WaitlistModule,
   ],
 })
 export class AppModule {}
