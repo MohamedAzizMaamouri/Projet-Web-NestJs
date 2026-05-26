@@ -7,12 +7,14 @@ import { EventsService } from './events.service';
 import { EventsController } from './events.controller';
 import { CategoriesModule } from '../categories/categories.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { FollowsModule } from '../follows/follows.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Event, Ticket]),
     CategoriesModule,
     RealtimeModule,
+    FollowsModule,
     HttpModule,
   ],
   providers: [EventsService],

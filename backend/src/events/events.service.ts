@@ -22,6 +22,7 @@ import { Ticket, TicketStatus } from '../tickets/ticket.entity';
 import { transitionEvent } from './event-status.machine';
 import { transition } from '../tickets/ticket-status.machine';
 import { RealtimeService } from '../realtime/realtime.service';
+import { FollowsService } from '../follows/follows.service';
 
 @Injectable()
 export class EventsService extends BaseService<Event> {
@@ -36,6 +37,7 @@ export class EventsService extends BaseService<Event> {
 
       private readonly categoriesService: CategoriesService,
       private readonly realtimeService: RealtimeService,
+      private readonly followsService: FollowsService,
       private readonly httpService: HttpService,
       private readonly configService: ConfigService,
   ) {
@@ -74,7 +76,15 @@ export class EventsService extends BaseService<Event> {
       status: EventStatus.PUBLISHED,
     });
 
-    return this.eventRepository.save(event);
+    const saved = await this.eventRepository.save(event);
+
+    this.followsService.notifyFollowersOfNewEvent(saved).catch((err) =>
+      this.logger.warn(
+        `Follow notification failed for event #${saved.id}: ${(err as Error).message}`,
+      ),
+    );
+
+    return saved;
   }
 
   async updateEvent(

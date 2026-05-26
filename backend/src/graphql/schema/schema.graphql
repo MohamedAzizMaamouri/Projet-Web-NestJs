@@ -20,6 +20,7 @@ type User {
     email: String!
     role: UserRole!
     createdAt: String!
+    followerCount: Int
 }
 
 type TicketTier {
@@ -53,8 +54,24 @@ type Ticket {
     status: TicketStatus!
 }
 
+
+type Follow {
+    id: Int!
+    organizer: User!
+    follower: User!
+    createdAt: String!
+}
+
 type Query {
     events(category: String, date: String): [Event!]!
     event(id: Int!): Event!
     myTickets: [Ticket!]!
+
+    myFollowedOrganizers: [User!]!
+    organizerFollowers(organizerId: Int!): [User!]!
+}
+
+type Mutation {
+    followOrganizer(organizerId: Int!): Follow!
+    unfollowOrganizer(organizerId: Int!): Boolean!
 }

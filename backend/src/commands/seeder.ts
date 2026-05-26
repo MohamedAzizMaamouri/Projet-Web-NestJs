@@ -17,6 +17,7 @@ import { TicketTier } from '../tickets/ticket-tier.entity';
 import { PromoCode } from '../promo-codes/promo-code.entity';
 import { WaitlistEntry } from '../waitlist/waitlist-entry.entity';
 import { Event } from '../events/event.entity';
+import { UserFollowsOrganizer } from '../follows/user-follows-organizer.entity';
 import { Repository, DataSource } from 'typeorm';
 
 async function seed() {
@@ -35,6 +36,7 @@ async function seed() {
   const promoCodeRepository = app.get<Repository<PromoCode>>(getRepositoryToken(PromoCode));
   const waitlistRepository  = app.get<Repository<WaitlistEntry>>(getRepositoryToken(WaitlistEntry));
   const eventRepository     = app.get<Repository<Event>>(getRepositoryToken(Event));
+  const followsRepository   = app.get<Repository<UserFollowsOrganizer>>(getRepositoryToken(UserFollowsOrganizer));
   const dataSource          = app.get(DataSource);
 
   console.log('🌱 Starting database seed...');
@@ -46,6 +48,7 @@ async function seed() {
   await promoCodeRepository.clear();
   await ticketRepository.clear();
   await tierRepository.clear();
+  await followsRepository.clear();
   await dataSource.query('SET FOREIGN_KEY_CHECKS = 1');
   console.log('  Cleared.');
 
@@ -137,6 +140,21 @@ async function seed() {
     attendee2User = await userRepository.save(rawAttendee2);
     console.log('  Created attendee2 user: bob@stagepass.io / Attendee2_1234!');
   }
+
+  // ─── Follows ───────────────────────────────────────────────────────────────
+  const followJaneOrganizer = followsRepository.create({
+    follower: attendeeUser,
+    organizer: organizerUser,
+  });
+  await followsRepository.save(followJaneOrganizer);
+  console.log('  Created follow: jane_doe follows organizer_sam');
+
+  const followBobOrganizer = followsRepository.create({
+    follower: attendee2User,
+    organizer: organizerUser,
+  });
+  await followsRepository.save(followBobOrganizer);
+  console.log('  Created follow: bob_smith follows organizer_sam');
 
   // ─── Events ────────────────────────────────────────────────────────────────
   // Tiers were wiped above so we always need events — fetch or create them.
@@ -334,6 +352,10 @@ async function seed() {
   console.log('Organizer:  organizer@stagepass.io  / Organizer1234!');
   console.log('Attendee:   jane@stagepass.io       / Attendee1234!');
   console.log('Attendee2:  bob@stagepass.io        / Attendee2_1234!');
+  console.log('────────────────────────────────────────────────────────');
+  console.log('Follow seed:');
+  console.log('  jane_doe follows organizer_sam');
+  console.log('  bob_smith follows organizer_sam');
   console.log('────────────────────────────────────────────────────────');
   console.log('Promo codes:');
   console.log('  NEON20       → 20% off Neon Horizons Music Festival');

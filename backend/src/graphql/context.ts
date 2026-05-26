@@ -10,6 +10,8 @@ import { User as UserEntity } from '../users/user.entity';
 import { Event } from '../events/event.entity';
 import { Category } from '../categories/category.entity';
 import { Ticket } from '../tickets/ticket.entity';
+import { UserFollowsOrganizer } from '../follows/user-follows-organizer.entity';
+import {TicketTier} from "../tickets/ticket-tier.entity";
 
 export const AppDataSource = new DataSource({
     type: 'mysql',
@@ -18,7 +20,7 @@ export const AppDataSource = new DataSource({
     username: process.env.DB_USERNAME,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
-    entities: [UserEntity, Event, Category, Ticket],
+    entities: [UserEntity, Event, Category, Ticket, TicketTier, UserFollowsOrganizer],
     synchronize: false,
     charset: 'utf8mb4',
 });
