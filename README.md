@@ -48,44 +48,48 @@ A hybrid REST + GraphQL API for an event ticketing platform built with NestJS, T
 | Config | @nestjs/config (.env via dotenv) |
 | GraphQL server | GraphQL Yoga (standalone, SDL-first) |
 | GraphQL schema | @graphql-tools/schema |
+| WebSocket | Socket.io + @nestjs/websockets |
+| Realtime (SSE) | NestJS SSE + RxJS Subject |
 
 ---
 
 ## Architecture Overview
 
-StagePass exposes **two servers** running side by side, sharing the same MySQL database and TypeORM entities:
+StagePass exposes **two servers** running side by side, sharing the same MySQL database and TypeORM entities, plus a real-time layer embedded in the REST server:
 
 ```
-┌─────────────────────────────────────────────┐
-│                   Clients                   │
-│   Mobile App      │      Web Dashboard      │
-└────────┬──────────┴──────────────┬──────────┘
-         │                         │
-         ▼                         ▼
-┌─────────────────┐     ┌──────────────────────┐
-│  GraphQL Yoga   │     │   NestJS REST API    │
-│  port 4001      │     │   port 3000          │
-│                 │     │                      │
-│  READ / BROWSE  │     │  WRITE / ACTIONS     │
-│  - events       │     │  POST /auth/login    │
-│  - event(id)    │     │  POST /tickets       │
-│  - myTickets    │     │  POST /events        │
-└────────┬────────┘     └──────────┬───────────┘
-         │                         │
-         └─────────────┬───────────┘
-                       ▼
-            ┌──────────────────┐
-            │  MySQL Database  │
-            │   (shared)       │
-            └──────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                          Clients                            │
+│   Mobile App       │   Web Dashboard   │   Live UI          │
+└────────┬───────────┴─────────┬─────────┴────────┬───────────┘
+         │                     │                   │
+         ▼                     ▼                   ▼
+┌─────────────────┐  ┌──────────────────┐  ┌──────────────────────┐
+│  GraphQL Yoga   │  │  NestJS REST API │  │   NestJS Realtime    │
+│  port 4001      │  │  port 3000       │  │   port 3000          │
+│                 │  │                  │  │                      │
+│  READ / BROWSE  │  │  WRITE / ACTIONS │  │  SSE streams         │
+│  - events       │  │  POST /auth      │  │  WS namespace /events│
+│  - event(id)    │  │  POST /tickets   │  │  - availability      │
+│  - myTickets    │  │  POST /events    │  │  - messages          │
+└────────┬────────┘  └──────────┬───────┘  │  - event status     │
+         │                      │           │  - my tickets        │
+         └──────────────┬───────┘           └──────────┬───────────┘
+                        ▼                              ▼
+             ┌──────────────────┐          ┌──────────────────┐
+             │  MySQL Database  │          │   RxJS Subjects  │
+             │   (shared)       │          │  (in-process bus)│
+             └──────────────────┘          └──────────────────┘
 ```
 
 | Layer | Technology | Port | Responsibility |
 |---|---|---|---|
 | REST API | NestJS | 3000 | Auth, mutations (create/update/delete) |
 | GraphQL | GraphQL Yoga | 4001 | Browsing, searching, reading data |
+| SSE | NestJS `@Sse` | 3000 | Live push streams (availability, messages, status, personal tickets) |
+| WebSocket | Socket.io | 3000 | Bidirectional real-time room messaging (`/events` namespace) |
 
-**Rule of thumb:** use REST to write, use GraphQL to read.
+**Rule of thumb:** use REST to write, use GraphQL to read, use SSE/WebSocket to react.
 
 ---
 
@@ -129,7 +133,9 @@ All configuration lives in `.env`. Never commit this file.
 | `DB_NAME` | Database name | `stagepass` |
 | `JWT_SECRET` | Secret used to sign JWTs | `a-long-random-string` |
 | `JWT_EXPIRES_IN` | JWT lifetime | `3600s` |
-| `WEBHOOK_URL` | (Optional) URL to POST ticket events to | `https://webhook.site/your-uuid` |
+| `WEBHOOK_URL` | URL to POST on ticket purchase | `https://webhook.site/your-uuid` |
+| `TICKET_SCANNED_WEBHOOK_URL` | (Optional) URL to POST when a ticket is scanned | `https://webhook.site/your-uuid` |
+| `EVENT_STATUS_WEBHOOK_URL` | (Optional) URL to POST on event status changes | `https://webhook.site/your-uuid` |
 
 `TypeORM` is configured with `synchronize: true`, meaning it will automatically create/alter tables to match your entities on every startup. **Turn this off and use migrations before going to production.**
 
@@ -216,20 +222,51 @@ src/
 │
 ├── events/
 │   ├── event.entity.ts            # ManyToOne: category, organizer (both eager-loaded)
-│   ├── events.service.ts          # Extends BaseService; owns update/delete ownership checks
-│   ├── events.controller.ts       # Full CRUD — see API Reference
+│   ├── event-status.machine.ts    # State machine: PUBLISHED → CANCELLED / ENDED
+│   ├── events.service.ts          # Extends BaseService; owns update/delete/cancel + status webhooks
+│   ├── events.controller.ts       # Full CRUD + PATCH status + GET revenue — see API Reference
 │   ├── events.module.ts           # Exported so TicketsModule can inject EventsService
 │   └── dto/
 │       ├── create-event.dto.ts
-│       └── update-event.dto.ts    # PartialType(CreateEventDto) — all fields optional
+│       ├── update-event.dto.ts            # PartialType(CreateEventDto) — all fields optional
+│       └── transition-event-status.dto.ts
 │
 ├── tickets/
-│   ├── ticket.entity.ts           # ManyToOne: event, owner (both eager-loaded)
-│   ├── tickets.service.ts         # purchaseTicket() with capacity check + webhook
-│   ├── tickets.controller.ts      # POST /tickets, GET /tickets/my
+│   ├── ticket.entity.ts           # ManyToOne: event, owner, tier (all eager-loaded)
+│   ├── ticket-status.machine.ts   # State machine: PENDING → CONFIRMED → CANCELLED/REFUNDED/SCANNED
+│   ├── ticket-tier.entity.ts      # Price tiers per event (General, VIP…)
+│   ├── tickets.service.ts         # purchaseTicket(), cancelTicket(), refundTicket(), scanTicket(), verifyTicket()
+│   ├── tickets.controller.ts      # POST /tickets, GET /tickets/my, cancel, refund, scan, verify
 │   ├── tickets.module.ts
+│   ├── ticket-tiers.service.ts
+│   ├── ticket-tiers.controller.ts # CRUD for ticket tiers (organizer/admin)
+│   ├── ticket-tiers.module.ts
 │   └── dto/
-│       └── create-ticket.dto.ts
+│       ├── create-ticket.dto.ts
+│       ├── create-ticket-tier.dto.ts
+│       └── update-ticket-tier.dto.ts
+│
+├── promo-codes/                   # Promotional discount codes
+│   ├── promo-code.entity.ts
+│   ├── promo-codes.service.ts     # applyPromoCode() — validates and applies discounts
+│   ├── promo-codes.controller.ts  # CRUD (admin/organizer)
+│   ├── promo-codes.module.ts
+│   └── dto/
+│       └── create-promo-code.dto.ts
+│
+├── waitlist/                      # Waitlist for sold-out events
+│   ├── waitlist-entry.entity.ts   # Tracks position + WAITING/NOTIFIED/CLAIMED/EXPIRED status
+│   ├── waitlist.service.ts        # joinWaitlist(), notifyNextWaitingUser(), markClaimed()
+│   ├── waitlist.controller.ts     # POST /waitlist, GET /waitlist/my, GET /waitlist/event/:id
+│   ├── waitlist.module.ts
+│   └── dto/
+│       └── join-waitlist.dto.ts
+│
+├── realtime/                      # All real-time features (SSE + WebSocket)
+│   ├── realtime.service.ts        # RxJS Subject bus; publishAvailability/Message/EventStatus/PersonalTicket
+│   ├── realtime.controller.ts     # @Sse endpoints — see SSE Reference
+│   ├── realtime.gateway.ts        # Socket.io gateway, namespace /events
+│   └── realtime.module.ts         # Exports RealtimeService so other modules can publish
 │
 ├── commands/
 │   └── seeder.ts                  # Standalone NestJS context; seeds DB with sample data
@@ -780,18 +817,29 @@ fragment eventInfos on Event {
 AppModule
 ├── ConfigModule (global)          — provides ConfigService everywhere
 ├── TypeOrmModule (root)           — DB connection, reads config from ConfigService
-├── HttpModule                     — makes HttpService available (used by TicketsModule)
+├── HttpModule                     — makes HttpService available (used by TicketsModule, EventsModule)
 ├── AuthModule
 │   └── imports UsersModule        — needs UsersService to look up users during login/register
 │   └── imports JwtModule          — signs and verifies tokens
 ├── UsersModule                    — exported, no controller, pure data access layer
 ├── CategoriesModule               — exported so EventsModule can resolve categories
+├── RealtimeModule                 — exported so TicketsModule and EventsModule can publish events
+│   └── RealtimeService            — RxJS Subject bus
+│   └── RealtimeGateway            — Socket.io gateway (/events namespace)
+│   └── RealtimeController         — @Sse endpoints
+├── WaitlistModule
+│   └── imports RealtimeModule     — publishes waitlist notifications
 ├── EventsModule
 │   └── imports CategoriesModule   — needs CategoriesService to validate categoryId
+│   └── imports RealtimeModule     — publishes event status changes
 │   └── exported so TicketsModule can resolve events
+├── PromoCodesModule               — discount code validation
 └── TicketsModule
     └── imports EventsModule       — needs EventsService to load event + check capacity
-    └── imports HttpModule         — needs HttpService to fire webhook
+    └── imports HttpModule         — needs HttpService to fire webhooks
+    └── imports RealtimeModule     — publishes availability + personal ticket updates
+    └── imports PromoCodesModule   — applies promo codes at purchase
+    └── imports WaitlistModule     — checks/clears waitlist reservations
 
 GraphQL Yoga (standalone — port 4001)
 └── context.ts                     — opens its own TypeORM DataSource (synchronize: false)
@@ -853,9 +901,13 @@ Response — exactly the fields the client requested
 
 ## Webhook Integration
 
-Every time a ticket is successfully purchased via REST, `TicketsService` fires a `POST` request to the configured `WEBHOOK_URL`.
+StagePass fires three distinct outgoing webhooks. All are **fire-and-forget** with a 5-second timeout — failures are logged but never affect the business logic.
 
-**Payload sent:**
+### 1. Ticket Purchased (`WEBHOOK_URL`)
+
+Fired by `TicketsService.purchaseTicket()` after every successful purchase.
+
+**Payload:**
 ```json
 {
   "ticketId": 7,
@@ -866,9 +918,51 @@ Every time a ticket is successfully purchased via REST, `TicketsService` fires a
 }
 ```
 
-- Falls back to `https://webhook.site/your-uuid` if `WEBHOOK_URL` is not set.
-- 5-second timeout. Errors are silently discarded — the ticket purchase is not affected.
-- To test locally: create a free endpoint at [webhook.site](https://webhook.site) and set it as `WEBHOOK_URL`.
+Falls back to `https://webhook.site/your-uuid` if `WEBHOOK_URL` is not set.
+
+---
+
+### 2. Ticket Scanned (`TICKET_SCANNED_WEBHOOK_URL`)
+
+Fired by `TicketsService.scanTicket()` and `verifyTicket()` when an organizer or admin scans a ticket at the venue entrance. Only fires if `TICKET_SCANNED_WEBHOOK_URL` is set.
+
+**Payload:**
+```json
+{
+  "event_type": "ticket.scanned",
+  "ticketId": 7,
+  "qrToken": "uuid-v4",
+  "eventId": 1,
+  "eventTitle": "Neon Horizons Music Festival",
+  "ownerEmail": "jane@example.com",
+  "ownerUsername": "janedoe",
+  "seat": "A-14",
+  "scannedAt": "2025-06-01T19:45:00.000Z"
+}
+```
+
+---
+
+### 3. Event Status Changed (`EVENT_STATUS_WEBHOOK_URL`)
+
+Fired by `EventsService.transitionStatus()` and `cancelEvent()` on every status change (`published → cancelled`, etc.). Only fires if `EVENT_STATUS_WEBHOOK_URL` is set.
+
+**Payload:**
+```json
+{
+  "event_type": "event.status_changed",
+  "eventId": 1,
+  "title": "Neon Horizons Music Festival",
+  "location": "Parc des Expositions",
+  "date": "2025-09-01T20:00:00.000Z",
+  "previousStatus": "published",
+  "newStatus": "cancelled",
+  "organizerEmail": "organizer@stagepass.io",
+  "changedAt": "2025-06-01T10:00:00.000Z"
+}
+```
+
+To test locally: create a free endpoint at [webhook.site](https://webhook.site) and set the corresponding variable in `.env`.
 
 ---
 
