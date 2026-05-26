@@ -12,8 +12,8 @@ import { Category } from '../categories/category.entity';
 
 export enum EventStatus {
   PUBLISHED = 'published',
-  ONGOING   = 'ongoing',
-  ENDED     = 'ended',
+  ONGOING = 'ongoing',
+  ENDED = 'ended',
   CANCELLED = 'cancelled',
 }
 
@@ -30,6 +30,9 @@ export class Event {
 
   @Column({ type: 'datetime' })
   date: Date;
+
+  @Column({ type: 'datetime', nullable: true })
+  salesClosedAt: Date;
 
   @Column()
   location: string;

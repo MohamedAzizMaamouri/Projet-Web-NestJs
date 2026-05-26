@@ -6,7 +6,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, QueryFailedError, Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { BaseService } from '../common/base.service';
@@ -61,6 +61,26 @@ export class TicketsService extends BaseService<Ticket> {
         );
       }
 
+      const salesClosedAt =
+        event.salesClosedAt ?? new Date(event.date.getTime() - 60 * 60 * 1000);
+
+      if (salesClosedAt <= new Date()) {
+        throw new BadRequestException('Ticket sales are closed for this event');
+      }
+
+      const existingTicket = await manager.getRepository(Ticket).findOne({
+        where: {
+          event: { id: event.id },
+          owner: { id: buyer.id },
+        },
+      });
+
+      if (existingTicket) {
+        throw new ConflictException(
+          'Vous possédez déjà un ticket pour cet événement',
+        );
+      }
+
       const soldCount = await manager.getRepository(Ticket).count({
         where: { event: { id: event.id }, status: TicketStatus.CONFIRMED },
       });
@@ -71,20 +91,22 @@ export class TicketsService extends BaseService<Ticket> {
         );
       }
 
-      const numericPart = parseInt(dto.seat.replace(/^[A-Za-z\-]*/g, ''), 10);
-      if (!isNaN(numericPart) && numericPart > event.capacity) {
-        throw new BadRequestException(
-          `Seat "${dto.seat}" exceeds event capacity (${event.capacity})`,
-        );
-      }
+      if (dto.seat) {
+        const numericPart = parseInt(dto.seat.replace(/^[A-Za-z\-]*/g, ''), 10);
+        if (!isNaN(numericPart) && numericPart > event.capacity) {
+          throw new BadRequestException(
+            `Seat "${dto.seat}" exceeds event capacity (${event.capacity})`,
+          );
+        }
 
-      const seatTaken = await manager.getRepository(Ticket).findOne({
-        where: { event: { id: event.id }, seat: dto.seat },
-      });
-      if (seatTaken) {
-        throw new ConflictException(
-          `Seat "${dto.seat}" is already taken for this event`,
-        );
+        const seatTaken = await manager.getRepository(Ticket).findOne({
+          where: { event: { id: event.id }, seat: dto.seat },
+        });
+        if (seatTaken) {
+          throw new ConflictException(
+            `Seat "${dto.seat}" is already taken for this event`,
+          );
+        }
       }
 
       // Start at PENDING, immediately confirm (payment is synchronous for now)
@@ -102,7 +124,23 @@ export class TicketsService extends BaseService<Ticket> {
         qrToken: uuidv4(),
       });
 
-      return manager.getRepository(Ticket).save(ticket);
+      try {
+        return await manager.getRepository(Ticket).save(ticket);
+      } catch (error) {
+        if (
+          error instanceof QueryFailedError &&
+          String((error as any).driverError?.code) === 'ER_DUP_ENTRY' &&
+          String((error as any).driverError?.message).includes(
+            'UQ_ticket_event_owner',
+          )
+        ) {
+          throw new ConflictException(
+            'Vous possédez déjà un ticket pour cet événement',
+          );
+        }
+
+        throw error;
+      }
     });
 
     const fullEvent = await this.eventsService.getEventById(dto.eventId);
