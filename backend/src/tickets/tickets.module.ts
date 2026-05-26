@@ -6,9 +6,15 @@ import { Ticket } from './ticket.entity';
 import { TicketsService } from './tickets.service';
 import { TicketsController } from './tickets.controller';
 import { EventsModule } from '../events/events.module';
+import { RealtimeModule } from '../realtime/realtime.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Ticket]), EventsModule, HttpModule],
+  imports: [
+    TypeOrmModule.forFeature([Ticket]),
+    EventsModule,
+    HttpModule,
+    RealtimeModule,
+  ],
   providers: [TicketsService],
   controllers: [TicketsController],
 })

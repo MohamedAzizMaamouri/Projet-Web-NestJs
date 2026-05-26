@@ -8,6 +8,7 @@ import { UsersModule } from './users/users.module';
 import { EventsModule } from './events/events.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { CategoriesModule } from './categories/categories.module';
+import { RealtimeModule } from './realtime/realtime.module';
 
 import { User } from './users/user.entity';
 import { Event } from './events/event.entity';
@@ -40,6 +41,7 @@ import { Ticket } from './tickets/ticket.entity';
     EventsModule,
     TicketsModule,
     CategoriesModule,
+    RealtimeModule,
   ],
 })
 export class AppModule {}
