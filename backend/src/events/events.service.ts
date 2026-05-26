@@ -2,12 +2,16 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import {
   InjectRepository,
   InjectRepository as InjectTicketRepository,
 } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
+import { firstValueFrom } from 'rxjs';
 import { BaseService } from '../common/base.service';
 import { Event, EventStatus } from './event.entity';
 import { CreateEventDto } from './dto/create-event.dto';
@@ -17,17 +21,23 @@ import { CategoriesService } from '../categories/categories.service';
 import { Ticket, TicketStatus } from '../tickets/ticket.entity';
 import { transitionEvent } from './event-status.machine';
 import { transition } from '../tickets/ticket-status.machine';
+import { RealtimeService } from '../realtime/realtime.service';
 
 @Injectable()
 export class EventsService extends BaseService<Event> {
+  private readonly logger = new Logger(EventsService.name);
+
   constructor(
-    @InjectRepository(Event)
-    private readonly eventRepository: Repository<Event>,
+      @InjectRepository(Event)
+      private readonly eventRepository: Repository<Event>,
 
-    @InjectTicketRepository(Ticket)
-    private readonly ticketRepository: Repository<Ticket>,
+      @InjectTicketRepository(Ticket)
+      private readonly ticketRepository: Repository<Ticket>,
 
-    private readonly categoriesService: CategoriesService,
+      private readonly categoriesService: CategoriesService,
+      private readonly realtimeService: RealtimeService,
+      private readonly httpService: HttpService,
+      private readonly configService: ConfigService,
   ) {
     super(eventRepository);
   }
@@ -159,15 +169,20 @@ export class EventsService extends BaseService<Event> {
 
     await this.refundAllTicketsForEvent(id);
 
-    await this.transitionStatus(id, EventStatus.CANCELLED, requestingUser);
+    const previousStatus = event.status;
+    const updated = await this.transitionStatus(
+        id,
+        EventStatus.CANCELLED,
+        requestingUser,
+    );
+
+    this.realtimeService.publishEventStatus(updated, previousStatus);
+
+    await this.fireEventStatusWebhook(updated, previousStatus);
   }
 
   // ─── Revenue ─────────────────────────────────────────────────────────────────
 
-  /**
-   * Returns total revenue for an event: SUM of pricePaid across all CONFIRMED tickets.
-   * Only the event's organizer or an admin can access this.
-   */
   async getEventRevenue(
     eventId: number,
     requestingUser: User,
@@ -228,9 +243,54 @@ export class EventsService extends BaseService<Event> {
     const event = await this.getEventById(id);
     this.assertOwnerOrAdmin(event, requestingUser);
 
+    const previousStatus = event.status;
     event.status = transitionEvent(event.status, newStatus);
-    return this.eventRepository.save(event);
+    const updated = await this.eventRepository.save(event);
+
+    this.realtimeService.publishEventStatus(updated, previousStatus);
+
+    await this.fireEventStatusWebhook(updated, previousStatus);
+
+    return updated;
   }
+
+
+  private async fireEventStatusWebhook(
+      event: Event,
+      previousStatus: EventStatus,
+  ): Promise<void> {
+    const webhookUrl = this.configService.get<string>(
+        'EVENT_STATUS_WEBHOOK_URL',
+    );
+    if (!webhookUrl) return;
+
+    const payload = {
+      event_type:      'event.status_changed',
+      eventId:         event.id,
+      title:           event.title,
+      location:        event.location,
+      date:            event.date,
+      previousStatus,
+      newStatus:       event.status,
+      organizerEmail:  event.organizer?.email,
+      changedAt:       new Date().toISOString(),
+    };
+
+    try {
+      await firstValueFrom(
+          this.httpService.post(webhookUrl, payload, { timeout: 5_000 }),
+      );
+      this.logger.log(
+          `Webhook event.status_changed sent for event #${event.id} (${previousStatus} → ${event.status})`,
+      );
+    } catch (err) {
+      // Le webhook ne doit jamais bloquer la logique métier
+      this.logger.warn(
+          `Webhook event.status_changed failed for event #${event.id}: ${(err as Error).message}`,
+      );
+    }
+  }
+
 
   private assertOwnerOrAdmin(event: Event, user: User): void {
     if (user.role !== UserRole.ADMIN && event.organizer.id !== user.id) {

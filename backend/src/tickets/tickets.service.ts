@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, QueryFailedError, Repository } from 'typeorm';
@@ -25,6 +26,8 @@ import { WaitlistService } from '../waitlist/waitlist.service';
 
 @Injectable()
 export class TicketsService extends BaseService<Ticket> {
+  private readonly logger = new Logger(TicketsService.name);
+
   constructor(
     @InjectRepository(Ticket)
     private readonly ticketRepository: Repository<Ticket>,
@@ -243,6 +246,10 @@ export class TicketsService extends BaseService<Ticket> {
     const saved = await this.ticketRepository.save(ticket);
     await this.realtimeService.publishAvailability(ticket.event.id);
     await this.waitlistService.notifyNextWaitingUser(ticket.event.id);
+
+    const eventTitle = saved.event?.title ?? `Event #${saved.event?.id}`;
+    this.realtimeService.publishPersonalTicketUpdate(saved, eventTitle);
+
     return saved;
   }
 
@@ -263,6 +270,10 @@ export class TicketsService extends BaseService<Ticket> {
     const saved = await this.ticketRepository.save(ticket);
     await this.realtimeService.publishAvailability(ticket.event.id);
     await this.waitlistService.notifyNextWaitingUser(ticket.event.id);
+
+    const eventTitle = saved.event?.title ?? `Event #${saved.event?.id}`;
+    this.realtimeService.publishPersonalTicketUpdate(saved, eventTitle);
+
     return saved;
   }
 
@@ -289,7 +300,14 @@ export class TicketsService extends BaseService<Ticket> {
     // Throws if ticket is already SCANNED, CANCELLED, or REFUNDED
     ticket.status = transition(ticket.status, TicketStatus.SCANNED);
 
-    return this.ticketRepository.save(ticket);
+    const saved = await this.ticketRepository.save(ticket);
+
+    const eventTitle = saved.event?.title ?? `Event #${saved.event?.id}`;
+    this.realtimeService.publishPersonalTicketUpdate(saved, eventTitle);
+
+    await this.fireTicketScannedWebhook(saved);
+
+    return saved;
   }
 
   // ─── Verify by QR token (organizer scans QR code at entrance) ───────────────
@@ -312,7 +330,14 @@ export class TicketsService extends BaseService<Ticket> {
 
     ticket.status = transition(ticket.status, TicketStatus.SCANNED);
 
-    return this.ticketRepository.save(ticket);
+    const saved = await this.ticketRepository.save(ticket);
+
+    const eventTitle = saved.event?.title ?? `Event #${saved.event?.id}`;
+    this.realtimeService.publishPersonalTicketUpdate(saved, eventTitle);
+
+    await this.fireTicketScannedWebhook(saved);
+
+    return saved;
   }
 
   // ─── Queries ─────────────────────────────────────────────────────────────────
@@ -321,6 +346,38 @@ export class TicketsService extends BaseService<Ticket> {
     return this.ticketRepository.find({
       where: { owner: { id: owner.id } },
     });
+  }
+  
+  private async fireTicketScannedWebhook(ticket: Ticket): Promise<void> {
+    const webhookUrl = this.configService.get<string>(
+        'TICKET_SCANNED_WEBHOOK_URL',
+    );
+    if (!webhookUrl) return;
+
+    const payload = {
+      event_type:   'ticket.scanned',
+      ticketId:     ticket.id,
+      qrToken:      ticket.qrToken,
+      eventId:      ticket.event?.id,
+      eventTitle:   ticket.event?.title,
+      ownerEmail:   ticket.owner?.email,
+      ownerUsername: ticket.owner?.username,
+      seat:         ticket.seat,
+      scannedAt:    new Date().toISOString(),
+    };
+
+    try {
+      await firstValueFrom(
+          this.httpService.post(webhookUrl, payload, { timeout: 5_000 }),
+      );
+      this.logger.log(
+          `Webhook ticket.scanned sent for ticket #${ticket.id}`,
+      );
+    } catch (err) {
+      this.logger.warn(
+          `Webhook ticket.scanned failed for ticket #${ticket.id}: ${(err as Error).message}`,
+      );
+    }
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
